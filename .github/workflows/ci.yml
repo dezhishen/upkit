@@ -108,13 +108,24 @@ jobs:
           if-no-files-found: ignore
 
   build:
-    name: 交叉编译校验
+    name: 构建可下载产物
     runs-on: ubuntu-latest
     needs: test
+    # 这里产出的是「能直接下载来手动试」的 exe。
+    #
+    # 它以前只做交叉编译校验（-o /dev/null），产物随手丢掉 —— 于是 CI 里
+    # 唯一能下载 exe 的地方只剩 smoke 的 release-smoke artifact，
+    # 名字也不直观，找起来很费劲。现在两个 job 的职责是：
+    #   build —— 日常可下载的构建产物（每次 push 都有，保留 7 天）
+    #   smoke —— 完整发布演练（含插件与 feed.yaml），与真发版同一条链路
     strategy:
       fail-fast: false
       matrix:
-        target: ["windows/amd64", "windows/arm64"]
+        include:
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -124,12 +135,23 @@ jobs:
           check-latest: true
           cache: true
 
-      - name: 编译 ${{ matrix.target }}
+      - name: 编译 windows/${{ matrix.goarch }}
         run: |
-          GOOS="${TARGET%%/*}" GOARCH="${TARGET##*/}" CGO_ENABLED=0 \
-            go build -trimpath -o /dev/null ./cmd/upkit
-        env:
-          TARGET: ${{ matrix.target }}
+          set -euo pipefail
+          mkdir -p dist
+          # 带上版本信息，方便拿到 exe 的人确认是哪个提交构建的。
+          version="v0.0.0-dev.${GITHUB_SHA::7}"
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath \
+            -ldflags "-s -w -X main.version=${version} -X main.commit=${GITHUB_SHA::7}" \
+            -o "dist/upkit-${{ matrix.goos }}-${{ matrix.goarch }}.exe" ./cmd/upkit
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upkit-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.exe
+          retention-days: 7
 
   smoke:
     name: 发布演练（不推 release）

@@ -88,6 +88,28 @@ test（gofmt / vet / test -race + 覆盖率）
 | `upkit-hub-windows-{amd64,arm64}.exe` | 示例插件 |
 | `feed.yaml` | **官方订阅清单**，见下节 |
 
+### 想下载一个 exe 来试，去哪找
+
+CI 的 artifact 分两处，用途不同：
+
+| 来源 | artifact 名 | 内容 | 保留 |
+| --- | --- | --- | --- |
+| `ci` 的 **build** job | `upkit-windows-amd64` / `upkit-windows-arm64` | 只有主程序 exe | 7 天 |
+| `ci` 的 **smoke** job | `release-smoke` | 完整的发布产物（exe + 插件 + `feed.yaml`） | 仓库默认 |
+| `release` 的 **publish** | 无 artifact，直接进 [Releases](../../releases) | 同上 | 永久 |
+
+下载路径：仓库 → **Actions** → 选一次运行 → 页面底部 **Artifacts**。
+
+两个 CI job 都排在 `test` 之后：**测试不过就不会有可下载的产物**。所以 artifact
+列表为空时，先看同一次运行里 `test` 是不是红的。
+
+日常只是想拿个能跑的 exe 手动点一点，用 **build** 的产物就够了 —— 每次 push 都会
+重新构建，artifact 名里就是目标平台。要验完整的发行流程（含插件与订阅清单），
+或者要对照 release 内容，才需要 **smoke** 的 `release-smoke`。
+
+这些 exe 带版本信息（`v0.0.0-dev.<短提交>`），`upkit.exe --version` 能看出是哪个
+提交构建的。
+
 ## 4. feed.yaml 从哪来
 
 `feed.yaml` 由 `scripts/gen-feed.sh` 在构建之后生成（摘要由产物现算，杜绝手工填错），
