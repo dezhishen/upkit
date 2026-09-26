@@ -16,12 +16,14 @@ import (
 // View 渲染整个界面。
 //
 // bubbletea v2 把终端特性从 Program 选项改成了 View 的字段：备用屏幕不再是
-// tea.WithAltScreen()，而是在这里声明。
+// tea.WithAltScreen()，而是这里声明。窗口标题也在此设置 —— 标题栏/标签页显示
+// 的就是它，因此界面内不再重复工具名与版本号。
 //
 // 尺寸未知（某些终端不会上报 TIOCGWINSZ）时退回 80x24，而不是空屏。
 func (m Model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
+	v.WindowTitle = "upkit " + m.Version()
 	return v
 }
 
@@ -70,20 +72,12 @@ func countLines(s string) int {
 
 // ── 头部 ──────────────────────────────────────────────────────
 
-// viewHeader 渲染标题行与面板标签行。
+// viewHeader 渲染面板标签行（头部仅此一行）。
 //
-// 计数信息右对齐：左标题右统计是通行的读法，也让宽度变化时两行都稳定。
+// 工具名与版本号已由窗口标题承载，这里不再重复。统计信息排在标签行右端：
+// 单独为它占一行会让左半屏全空，而合并后头部只占一行。
+// 宽度不足以同时容下两者时舍弃统计 —— 「当前在哪个面板」比计数重要。
 func (m Model) viewHeader(width int) string {
-	left := m.theme.Title().Render("upkit") + " " + m.theme.Dim().Render(m.Version())
-	counts := m.counts()
-	if counts != "" {
-		gap := width - Width(left) - Width(counts)
-		if gap < 1 {
-			gap = 1
-		}
-		left += strings.Repeat(" ", gap) + m.theme.Dim().Render(counts)
-	}
-
 	sep := m.theme.Dim().Render(m.tabSeparator())
 	tabs := make([]string, 0, len(tabTitles))
 	for i, t := range tabTitles {
@@ -98,7 +92,20 @@ func (m Model) viewHeader(width int) string {
 	if m.setDirty {
 		line += m.theme.Warn().Render("  ● 设置未保存")
 	}
-	return left + "\n" + line
+
+	counts := m.counts()
+	if counts != "" {
+		counts = m.theme.Dim().Render(counts)
+		if gap := width - Width(line) - Width(counts); gap >= 2 {
+			line += strings.Repeat(" ", gap) + counts
+		}
+	}
+	// 兜底：极窄的窗口里，标签行自己也放不下。截断好过换行 —— 换行会让头部
+	// 占两行，而高度预算按一行算，正文会被挤掉。
+	if Width(line) > width {
+		line = Truncate(line, width)
+	}
+	return line
 }
 
 // tabSeparator 用主题自己的竖线分隔标签，ASCII 主题下自动退化为 |。

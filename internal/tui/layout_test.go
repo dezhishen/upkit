@@ -133,14 +133,55 @@ func TestPanelTitleInTopBorder(t *testing.T) {
 	for i := 0; i < int(tabCount); i++ {
 		m.tab = tabID(i)
 		lines := strings.Split(content(m), "\n")
-		// 第 0 行是标题行（含 ANSI 样式，用 Contains），第 1 行是标签行，
-		// 第 2 行应为板块的上边框。
-		if !strings.Contains(lines[0], "upkit") {
-			t.Fatalf("面板 %s 第 0 行不是标题行:\n%s", tabTitles[i], lines[0])
+		// 头部只有一行（标签行），第 1 行应为板块的上边框。
+		if !strings.Contains(lines[0], tabTitles[i]) {
+			t.Fatalf("面板 %s 的标签未出现在第 0 行:\n%s", tabTitles[i], lines[0])
 		}
-		if !strings.Contains(lines[2], tabTitles[i]) {
-			t.Fatalf("面板 %s 的标题未出现在上边框（第 2 行）:\n%s", tabTitles[i], lines[2])
+		if !strings.Contains(lines[1], tabTitles[i]) {
+			t.Fatalf("面板 %s 的标题未出现在上边框（第 1 行）:\n%s", tabTitles[i], lines[1])
 		}
+	}
+}
+
+// 工具名与版本号不再占用界面行，改由窗口标题承载。
+func TestWindowTitleCarriesVersion(t *testing.T) {
+	m := newTestModel(t)
+	m = update(t, m, tea.WindowSizeMsg{Width: 90, Height: 20})
+	if got := m.View().WindowTitle; got != "upkit "+m.Version() {
+		t.Fatalf("窗口标题为 %q，期望 %q", got, "upkit "+m.Version())
+	}
+	if strings.Contains(content(m), "upkit") {
+		t.Fatalf("界面内不应再重复工具名与版本号:\n%s", content(m))
+	}
+}
+
+// 头部必须只占一行，且统计信息仍然可见。
+func TestHeaderIsSingleLineWithCounts(t *testing.T) {
+	m := newTestModel(t)
+	m.apps = []*engine.App{
+		{Ref: core.AppRef{ID: "git", Name: "Git"}, Action: core.ActionUpdate, Status: core.Status{Installed: true}},
+		{Ref: core.AppRef{ID: "demo", Name: "Demo"}, Action: core.ActionInstall},
+	}
+	m = update(t, m, tea.WindowSizeMsg{Width: 90, Height: 20})
+
+	head := m.viewHeader(90)
+	if countLines(head) != 1 {
+		t.Fatalf("头部应为 1 行，实际 %d 行:\n%s", countLines(head), head)
+	}
+	if !strings.Contains(head, "1 概览") {
+		t.Fatalf("头部缺少标签行:\n%s", head)
+	}
+	if !strings.Contains(head, "已安装 1") || !strings.Contains(head, "可更新 1") {
+		t.Fatalf("头部缺少统计信息:\n%s", head)
+	}
+
+	// 窄终端下先舍弃统计，标签行必须完整保留。
+	narrow := m.viewHeader(40)
+	if !strings.Contains(narrow, "1 概览") {
+		t.Fatalf("窄终端下标签行被舍弃:\n%s", narrow)
+	}
+	if Width(narrow) > 40 {
+		t.Fatalf("窄终端下头部宽度为 %d，已溢出", Width(narrow))
 	}
 }
 
