@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/dezhishen/upkit/internal/pluginfeed"
 	"github.com/dezhishen/upkit/internal/pluginhost"
@@ -231,15 +231,15 @@ func (m Model) viewFeedDetail(w, height int) string {
 		b.WriteString(m.theme.Err().Render("拉取失败：" + m.feedErr.Error()))
 		b.WriteString("\n\n")
 		b.WriteString(m.theme.Dim().Render("r 重试   esc 返回"))
-		return m.theme.Panel("订阅详情", b.String(), w, height, true)
+		return m.theme.Frame("订阅详情", b.String(), w, height, true)
 	case !m.feedLoaded:
 		b.WriteString(m.spinnerText() + " 正在拉取订阅…")
-		return m.theme.Panel("订阅详情", b.String(), w, height, true)
+		return m.theme.Frame("订阅详情", b.String(), w, height, true)
 	case len(m.feedEntries) == 0:
 		b.WriteString("该订阅没有适配当前平台的插件。")
 		b.WriteString("\n\n")
 		b.WriteString(m.theme.Dim().Render("r 重新拉取   esc 返回"))
-		return m.theme.Panel("订阅详情", b.String(), w, height, true)
+		return m.theme.Frame("订阅详情", b.String(), w, height, true)
 	}
 
 	for i, e := range m.feedEntries {
@@ -261,7 +261,7 @@ func (m Model) viewFeedDetail(w, height int) string {
 
 	b.WriteString("\n")
 	b.WriteString(m.theme.Dim().Render("i/enter 安装或更新   r 重新拉取   esc 返回"))
-	return m.theme.Panel("订阅详情", strings.TrimRight(b.String(), "\n"), w, height, true)
+	return m.theme.Frame("订阅详情", strings.TrimRight(b.String(), "\n"), w, height, true)
 }
 
 func (m Model) feedLine(i int, e pluginfeed.Entry) string {

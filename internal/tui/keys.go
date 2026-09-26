@@ -1,6 +1,6 @@
 package tui
 
-import keybind "github.com/charmbracelet/bubbles/key"
+import keybind "charm.land/bubbles/v2/key"
 
 // keyMap 集中声明键位，由 bubbles/help 生成 ? 面板与底栏提示。
 //

@@ -21,7 +21,7 @@ import (
 	"strings"
 	"sync"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-isatty"
 
 	"github.com/dezhishen/upkit/internal/apps"
@@ -212,7 +212,9 @@ func run(opts optionSet) error {
 		Host:       host,
 		Feed:       subStore,
 	})
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	// bubbletea v2 起，终端特性（备用屏幕、鼠标模式、窗口标题）改由 View 的字段声明，
+	// 不再是 NewProgram 的选项。备用屏幕在 Model.View 内设置。
+	p := tea.NewProgram(model)
 	_, err = p.Run()
 	return err
 }

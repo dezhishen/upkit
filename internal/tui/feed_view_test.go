@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/dezhishen/upkit/internal/pluginfeed"
 )
@@ -86,7 +86,7 @@ func TestFeedDetailStates(t *testing.T) {
 // esc 从订阅详情返回来源列表。
 func TestFeedDetailEscReturns(t *testing.T) {
 	m := feedTestModel(t, sameOriginPkg("alpha", "Alpha", "1.0.0", strings.Repeat("a", 64)))
-	m = update(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = update(t, m, key(tea.KeyEsc))
 	if m.feedFor != "" {
 		t.Fatalf("esc 应返回来源列表，实际 feedFor=%q", m.feedFor)
 	}

@@ -7,11 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/help"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/dezhishen/upkit/internal/apps"
 	"github.com/dezhishen/upkit/internal/core"
@@ -21,7 +22,6 @@ import (
 	"github.com/dezhishen/upkit/internal/pluginfeed"
 	"github.com/dezhishen/upkit/internal/pluginhost"
 	"github.com/dezhishen/upkit/internal/settings"
-	"github.com/dezhishen/upkit/internal/util"
 )
 
 // tabID 是面板编号。
@@ -114,6 +114,22 @@ func newPromptBox(title, label, initial string, secret bool, apply func(*Model, 
 	return &promptBox{Title: title, Label: label, Input: ti, Apply: apply}
 }
 
+// plainTextInputStyles 去掉 textinput 自带的配色。
+//
+// textinput 默认样式含提示符前景色与光标色，--no-color 下必须换成空样式，
+// 否则输入弹窗仍会输出颜色转义。光标的反色（Reverse）保留：反色不属于颜色，
+// 且清掉后光标将不可见。
+func plainTextInputStyles() textinput.Styles {
+	plain := lipgloss.NewStyle()
+	state := textinput.StyleState{
+		Text:        plain,
+		Placeholder: plain,
+		Suggestion:  plain,
+		Prompt:      plain,
+	}
+	return textinput.Styles{Focused: state, Blurred: state}
+}
+
 // Model 是 bubbletea 模型。
 type Model struct {
 	opts  Options
@@ -195,7 +211,7 @@ func New(opts Options) Model {
 		installCh: make(chan installProgress, 64),
 		spin:      newSpinner(opts.ASCII),
 		keys:      newKeyMap(),
-		helpView:  newHelpModel(),
+		helpView:  newHelpModel(opts.NoColor),
 	}
 	if m.log != nil {
 		for _, r := range m.log.Ring().Snapshot() {
@@ -240,9 +256,24 @@ func newSpinner(ascii bool) spinner.Model {
 }
 
 // newHelpModel 造帮助渲染器；ShowAll 让 ? 面板展开全部分组。
-func newHelpModel() help.Model {
+//
+// help.New() 自带一套深色配色。--no-color 时必须换成无样式，否则底栏与 ? 面板
+// 仍会输出 ANSI 转义序列，「禁用颜色」就成了一句空话。
+func newHelpModel(noColor bool) help.Model {
 	h := help.New()
 	h.ShowAll = true
+	if noColor {
+		plain := lipgloss.NewStyle()
+		h.Styles = help.Styles{
+			Ellipsis:       plain,
+			ShortKey:       plain,
+			ShortDesc:      plain,
+			ShortSeparator: plain,
+			FullKey:        plain,
+			FullDesc:       plain,
+			FullSeparator:  plain,
+		}
+	}
 	return h
 }
 
@@ -390,7 +421,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
@@ -465,8 +496,8 @@ func (m *Model) refreshLogView() {
 		if !m.logVisible(l) {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("%s %-5s %-10s %s",
-			l.At.Format("15:04:05"), strings.ToUpper(l.Level), util.Truncate(l.App, 10), l.Msg))
+		lines = append(lines, fmt.Sprintf("%s %s %s %s",
+			l.At.Format("15:04:05"), Cell(strings.ToUpper(l.Level), 5), Cell(l.App, 12), l.Msg))
 	}
 	m.logView.SetContent(strings.Join(lines, "\n"))
 	if m.logFollow {
@@ -491,10 +522,12 @@ func (m *Model) resizeLogView() {
 		h = 3
 	}
 	if !m.logReady {
-		m.logView = viewport.New(w, h)
+		// bubbles v2 把 Viewport 的宽高从字段改成了构造选项 + 存取方法。
+		m.logView = viewport.New(viewport.WithWidth(w), viewport.WithHeight(h))
 		m.logReady = true
 	} else {
-		m.logView.Width, m.logView.Height = w, h
+		m.logView.SetWidth(w)
+		m.logView.SetHeight(h)
 	}
 	m.refreshLogView()
 }
@@ -620,7 +653,7 @@ func (m Model) importCmd(path string) tea.Cmd {
 
 // ── 快捷键 ────────────────────────────────────────────────────
 
-func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
 	// 弹窗优先
@@ -735,7 +768,7 @@ func (m Model) updateOverview(key string) (tea.Model, tea.Cmd) {
 			m.busy = true
 			return m, m.planCmd(a.Ref.ID)
 		}
-	case " ", "space":
+	case "space":
 		a := m.current()
 		if a == nil {
 			return m, nil
@@ -848,7 +881,7 @@ func (m Model) updateJobs(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateLogs(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateLogs(key string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "f":
 		order := []string{"debug", "info", "warn", "error"}
@@ -880,9 +913,9 @@ func (m Model) updateLogs(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // handlePromptKey 把按键交给 textinput 处理，只拦下确认与取消。
-func (m Model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handlePromptKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	p := m.prompt
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
 		m.prompt = nil
 		m.setStatus("已取消")

@@ -5,15 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/dezhishen/upkit/internal/apps"
 	"github.com/dezhishen/upkit/internal/pluginfeed"
 )
-
-func key(r rune) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
-}
 
 // 来源面板应当列出清单里声明的插件来源。
 func TestSourcesPanelRendersPluginRows(t *testing.T) {
@@ -27,7 +23,7 @@ func TestSourcesPanelRendersPluginRows(t *testing.T) {
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(t, m, key('6'))
 
-	view := m.View()
+	view := content(m)
 	if !strings.Contains(view, "企业源") {
 		t.Fatalf("来源面板未显示插件名称:\n%s", view)
 	}
@@ -62,7 +58,7 @@ func TestSourcesPanelOpensPluginConfig(t *testing.T) {
 		t.Fatalf("配置视图提示缺失:\n%s", out)
 	}
 	// esc 返回列表。
-	m = update(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = update(t, m, key(tea.KeyEsc))
 	if m.cfgFor != "" {
 		t.Fatalf("esc 应返回列表，实际 cfgFor=%q", m.cfgFor)
 	}

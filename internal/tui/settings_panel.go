@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/dezhishen/upkit/internal/settings"
 	"github.com/dezhishen/upkit/internal/util"
@@ -214,7 +214,7 @@ func (m Model) updateSettings(key string) (tea.Model, tea.Cmd) {
 		if m.applyFieldDelta(fields, 1) {
 			m.setDirty = true
 		}
-	case " ", "enter":
+	case "space", "enter":
 		if m.setCursor >= 0 && m.setCursor < len(fields) {
 			f := fields[m.setCursor]
 			switch f.Kind {
@@ -327,5 +327,3 @@ func humanSize(n int64) string {
 	}
 	return util.HumanBytes(n)
 }
-
-var _ = util.Truncate

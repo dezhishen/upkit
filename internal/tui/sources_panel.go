@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	upkitplugin "github.com/dezhishen/upkit/pkg/plugin"
 
@@ -129,7 +129,7 @@ func (m Model) viewSources(w, height int) string {
 
 	rows := m.sourceRows()
 	if len(rows) == 0 {
-		return m.theme.Panel("来源",
+		return m.theme.Frame("来源",
 			"还没有任何插件来源。\n\n"+
 				"· 加订阅：按 a 填订阅地址，upkit 会自动下载并安装插件（需逐级授权）\n"+
 				"· 手工安装：把插件可执行文件与 <id>.plugin.yaml 放进 plugin/ 目录\n"+
@@ -156,7 +156,7 @@ func (m Model) viewSources(w, height int) string {
 
 	b.WriteString("\n")
 	b.WriteString(m.theme.Dim().Render("enter/c 进入（订阅看可装/可更新，插件改配置）   o 官方源   a 添加订阅   d 删除   space 启用/停用   r 重载"))
-	return m.theme.Panel("来源", strings.TrimRight(b.String(), "\n"), w, height, true)
+	return m.theme.Frame("来源", strings.TrimRight(b.String(), "\n"), w, height, true)
 }
 
 func (m Model) sourceLine(i int, r sourceRow) string {
@@ -214,11 +214,11 @@ func (m Model) viewPluginConfig(w, height int) string {
 	spec, ok := m.configSource()
 	if !ok {
 		m.cfgFor = ""
-		return m.theme.Panel("插件配置", "该来源已不存在。", w, height, true)
+		return m.theme.Frame("插件配置", "该来源已不存在。", w, height, true)
 	}
 	rows := m.configRows(spec)
 	if len(rows) == 0 {
-		return m.theme.Panel("插件配置",
+		return m.theme.Frame("插件配置",
 			fmt.Sprintf("%s 没有声明可配置项。\n\n插件可以用 ConfigSchema 声明配置字段，界面会据此生成表单。\n\n按 esc 返回。", spec.ID),
 			w, height, true)
 	}
@@ -241,7 +241,8 @@ func (m Model) viewPluginConfig(w, height int) string {
 		if r.Required {
 			label += " *"
 		}
-		b.WriteString(fmt.Sprintf("%s%-14s %s\n", cur, label, val))
+		// Cell 按显示宽度补齐，中文标签与英文值能对齐。
+		b.WriteString(cur + " " + Cell(label, 16) + " " + val + "\n")
 		if i == m.cfgCursor && r.Help != "" {
 			b.WriteString("  " + m.theme.Dim().Render(r.Help) + "\n")
 		}
@@ -249,7 +250,7 @@ func (m Model) viewPluginConfig(w, height int) string {
 
 	b.WriteString("\n")
 	b.WriteString(m.theme.Dim().Render("enter 编辑   D 恢复默认   esc 返回"))
-	return m.theme.Panel("插件配置", strings.TrimRight(b.String(), "\n"), w, height, true)
+	return m.theme.Frame("插件配置", strings.TrimRight(b.String(), "\n"), w, height, true)
 }
 
 // ── 按键 ──────────────────────────────────────────────────────
@@ -293,7 +294,7 @@ func (m Model) updateSources(key string) (tea.Model, tea.Cmd) {
 		return m.addBuiltinSubscription()
 	case "d":
 		return m.removeSubscription(rows)
-	case " ", "space":
+	case "space":
 		return m.toggleSource(rows)
 	case "r":
 		return m.reloadSources()
