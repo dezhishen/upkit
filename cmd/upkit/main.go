@@ -12,6 +12,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -173,7 +174,7 @@ func run(opts optionSet) error {
 	logSourceStates(mgr, host)
 
 	// 把插件来源里的软件并入清单；清单里的显式条目优先，可覆盖插件默认值。
-	mergePluginApps(afs, host)
+	fillPluginApps(afs, host)
 
 	// 订阅与授权记录：由界面维护，程序独占读写。
 	// 手工编辑这个文件等价于跳过授权确认，所以界面上不提供“直接改文件”的路径。
@@ -232,28 +233,27 @@ func logSourceStates(log core.Logger, host *pluginhost.Manager) {
 	}
 }
 
-// mergePluginApps 把插件来源里启用的软件并入清单。
+// fillPluginApps 用各插件来源提供的软件重建运行时列表。
 //
-// 清单里已存在的同 ID 条目一律保留（用户显式写的优先），插件条目只是补充。
-// 合并结果只存在于内存中，不会回写用户清单。
-func mergePluginApps(afs *apps.File, host *pluginhost.Manager) {
-	existing := make(map[string]bool, len(afs.Apps))
-	for _, a := range afs.Apps {
-		existing[a.ID] = true
-	}
+// 软件只能来自订阅，因此这里每次都从插件全量重取，不再保留任何用户手写条目；
+// 用户没有手写路径，也就没有“手写优先”可言。
+// 失败只影响该来源，其它来源照常。
+func fillPluginApps(afs *apps.File, host *pluginhost.Manager) {
+	out := make([]apps.AppSpec, 0, len(afs.Apps))
 	for _, id := range host.SourceIDs() {
 		specs, err := host.AppSpecs(id)
 		if err != nil {
-			continue // 来源不可用的原因已经在状态与日志里说明，不影响其它来源
+			continue // 来源不可用的原因已在状态与日志里说明，不影响其它来源
 		}
 		for _, spec := range specs {
-			if existing[spec.ID] {
-				continue
+			// 尊重来源内的单软件开关（界面上的空格键写的就是它）。
+			if !afs.SourceAppEnabled(id, spec.ID) {
+				spec.Enabled = new(bool)
 			}
-			existing[spec.ID] = true
-			afs.Apps = append(afs.Apps, spec)
+			out = append(out, spec)
 		}
 	}
+	afs.Apps = out
 }
 
 // pluginLogWriter 把插件进程的 stdout/stderr 逐行转发到宿主日志。
@@ -303,8 +303,42 @@ func (w *pluginLogWriter) emit(line string) {
 	}
 }
 
-// splitPluginLine 从 logfmt 行里取出级别与正文。
+// splitPluginLine 从插件日志行里取出级别与正文。
+//
+// 新插件用 zap 的 JSON encoder（值会被转义，杜绝日志注入）；
+// 旧插件发的是手拼 logfmt，仍然要认，否则升级宿主后老插件的日志会整段变成正文。
 func splitPluginLine(line string) (level, msg string) {
+	if lv, m, ok := splitPluginJSON(line); ok {
+		return lv, m
+	}
+	return splitPluginLogfmt(line)
+}
+
+// splitPluginJSON 解析 slog 输出的 JSON 行。
+func splitPluginJSON(line string) (level, msg string, ok bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "{") {
+		return "", "", false
+	}
+	var rec struct {
+		Level string `json:"level"`
+		Msg   string `json:"msg"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &rec); err != nil {
+		return "", "", false
+	}
+	if rec.Msg == "" && rec.Level == "" {
+		return "", "", false
+	}
+	level = strings.ToLower(rec.Level)
+	if level == "" {
+		level = upkitplugin.LogLevelInfo
+	}
+	return level, rec.Msg, true
+}
+
+// splitPluginLogfmt 兼容旧插件的 "level=x msg=y" 行。
+func splitPluginLogfmt(line string) (level, msg string) {
 	level, rest := upkitplugin.LogLevelInfo, line
 	if after, ok := strings.CutPrefix(rest, upkitplugin.LogKeyLevel+logfmtSeparator); ok {
 		rest = after

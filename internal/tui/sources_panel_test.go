@@ -126,8 +126,8 @@ func TestBuiltinFeedEntry(t *testing.T) {
 	if m.prompt == nil {
 		t.Fatal("授权后应弹出订阅地址输入框")
 	}
-	if m.prompt.Buf != pluginfeed.BuiltinFeedURL {
-		t.Fatalf("应预填官方源地址，实际 %q", m.prompt.Buf)
+	if m.prompt.Input.Value() != pluginfeed.BuiltinFeedURL {
+		t.Fatalf("应预填官方源地址，实际 %q", m.prompt.Input.Value())
 	}
 
 	// 已添加过时不再重复弹窗。

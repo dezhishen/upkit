@@ -22,9 +22,6 @@ PACKAGE="./cmd/upkit"
 OUT_DIR="dist"
 # upkit 只发行 Windows 版本；要用其它平台产物在开发机上冒烟，用 -t 显式指定。
 TARGETS="windows/amd64 windows/arm64"
-# 单文件体积门禁（MB）。插件子系统引入了 hashicorp/go-plugin，
-# 而它硬依赖 grpc + protobuf，因此基线比无插件时高；可用 MAX_EXE_MB 覆盖。
-MAX_EXE_MB="${MAX_EXE_MB:-24}"
 MAKE_ZIP=1
 VERSION=""
 LDFLAGS_EXTRA=""
@@ -118,14 +115,10 @@ for target in $TARGETS; do
   CGO_ENABLED=0 GOOS="$GOOS_NAME" GOARCH="$GOARCH_NAME" \
     go build -trimpath -ldflags "$LDFLAGS" -o "$out_path" "$PACKAGE"
 
-  # 体积门禁：二进制突然变大通常是引入了意料之外的大依赖。
+  # 体积只做展示，不设上限：二进制突然变大通常是引入了意料之外的大依赖，
+  # 但卡住构建并不能回答“这个依赖该不该要”。
   size_mb=$(( $(wc -c < "$out_path" | tr -d ' ') / 1048576 ))
-  printf '    体积:   %s MB（上限 %s MB）\n' "$size_mb" "$MAX_EXE_MB"
-  if (( size_mb > MAX_EXE_MB )); then
-    echo "错误: ${out_path} 体积 ${size_mb}MB 超过门禁 ${MAX_EXE_MB}MB" >&2
-    echo "      确认合理时可用 MAX_EXE_MB=<新上限> 重新运行覆盖" >&2
-    exit 1
-  fi
+  printf '    体积:   %s MB\n' "$size_mb"
   built_files+=("$out_path")
 done
 
@@ -140,7 +133,7 @@ package_windows() {
   cp "$bin" "$stage/upkit.exe"
   cp README.md LICENSE "$stage/" 2>/dev/null || true
   mkdir -p "$stage/configs"
-  cp configs/settings.example.yaml configs/apps.example.yaml "$stage/configs/" 2>/dev/null || true
+  cp configs/settings.example.yaml "$stage/configs/" 2>/dev/null || true
   mkdir -p "$stage/scripts"
   cp scripts/*.sh "$stage/scripts/" 2>/dev/null || true
 

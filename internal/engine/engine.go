@@ -71,6 +71,12 @@ type Engine struct {
 
 	mu   sync.RWMutex
 	list []*App
+
+	// locks 按 appID 提供互斥，保证同一个软件不会被两个 goroutine 同时改写。
+	// 同时更新批里的重复 id、或批量与单条同时触发时，交错执行
+	// RemoveContents/CopyDir 会互相删掉对方刚写入的文件，备份目录也可能碰撞，
+	// 而最终仍可能报「成功」。
+	locks sync.Map // map[string]*sync.Mutex
 }
 
 // New 构造 Engine。

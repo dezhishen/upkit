@@ -50,9 +50,57 @@ jobs:
         run: go vet ./...
 
       - name: 单元测试
-        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+        # -count=1 关掉结果缓存：命中缓存时测试根本没跑，却会报绿。
+        # -timeout 防止某个用例卡死把 job 拖到 GitHub 的 6 小时上限才失败。
+        run: go test -race -count=1 -timeout 15m -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: 覆盖率摘要
+        run: |
+          go tool cover -func=coverage.out | tail -1
+          echo "### 各包覆盖率" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          go test -count=1 -cover ./... 2>/dev/null | grep -v "no test files" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 关键包覆盖率门禁
+        # 阈值取在实测值下方 5–10 个点：既能拦住“新代码没写测试”，
+        # 又不会因为无关紧要的一两行变动就把人卡在 CI 上。
+        run: |
+          set -u
+          fail=0
+          check() {
+            pkg="$1"; min="$2"
+            cov=$(go test -count=1 -cover "$pkg" 2>/dev/null | sed -n 's/.*coverage: \([0-9.]*\)%.*/\1/p')
+            if [ -z "$cov" ]; then
+              echo "::error file=$pkg::拿不到覆盖率（包不存在或测试无法运行）"
+              fail=1
+              return
+            fi
+            printf '%-28s %6s%%（下限 %s%%）\n' "$pkg" "$cov" "$min"
+            if ! awk -v c="$cov" -v m="$min" 'BEGIN{exit !(c+0 >= m+0)}'; then
+              echo "::error file=$pkg::覆盖率 $cov% 低于下限 $min%"
+              fail=1
+            fi
+          }
+
+          check ./internal/util        80
+          check ./internal/registry    90
+          check ./internal/download    75
+          check ./internal/archive     70
+          check ./internal/unpacking   70
+          check ./internal/version     75
+          check ./internal/pluginfeed  65
+          check ./internal/apps        65
+          check ./internal/fsutil      60
+          check ./internal/settings    55
+          check ./internal/github      55
+          check ./internal/logging     55
+          check ./internal/engine      30
+
+          exit $fail
 
       - name: 上传覆盖率
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage

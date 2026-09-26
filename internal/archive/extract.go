@@ -19,6 +19,17 @@ import (
 // ProgressFunc 在解压过程中被调用（done/total 为条目数）。
 type ProgressFunc func(done, total int, current string)
 
+// 解压配额：挡住「一个几百 KB 的压缩包解出几十 GB」的压缩炸弹。
+//
+// 磁盘预检用的是压缩包体积，对小体积高压缩比的包给不出任何保护；
+// 而写满盘时旧版本已经被删，回滚同样需要空间，会连锁失败。
+const (
+	// MaxZipEntries 是单个压缩包允许的条目数上限。
+	MaxZipEntries = 200_000
+	// MaxExtractedBytes 是单次解压允许写出的总字节上限。
+	MaxExtractedBytes = 32 << 30 // 32 GiB
+)
+
 // Stats 汇总一次解压的结果。
 type Stats struct {
 	Files int
@@ -45,6 +56,13 @@ func ExtractZip(ctx context.Context, zipPath, destDir string, progress ProgressF
 	}
 
 	total := len(r.File)
+	// 条目数也要设上限：几万个小文件同样能把磁盘写满，
+	// 而磁盘预检用的是压缩包体积，拦不住这种放大。
+	if total > MaxZipEntries {
+		return stats, fmt.Errorf("压缩包条目数 %d 超过上限 %d", total, MaxZipEntries)
+	}
+
+	var written int64
 	for i, f := range r.File {
 		if err := ctx.Err(); err != nil {
 			return stats, err
@@ -73,7 +91,7 @@ func ExtractZip(ctx context.Context, zipPath, destDir string, progress ProgressF
 			continue
 		}
 
-		n, err := extractFile(f, target, mode)
+		n, err := extractFile(f, target, mode, MaxExtractedBytes-written)
 		if err != nil {
 			return stats, err
 		}
@@ -83,6 +101,7 @@ func ExtractZip(ctx context.Context, zipPath, destDir string, progress ProgressF
 		}
 		stats.Files++
 		stats.Bytes += n
+		written += n
 	}
 	if progress != nil {
 		progress(total, total, "")
@@ -91,7 +110,9 @@ func ExtractZip(ctx context.Context, zipPath, destDir string, progress ProgressF
 }
 
 // extractFile 写出单个条目并返回字节数。
-func extractFile(f *zip.File, target string, mode os.FileMode) (int64, error) {
+//
+// quota 是本次写入允许占用的最大字节数，用于挡住「小压缩包解出巨量体积」。
+func extractFile(f *zip.File, target string, mode os.FileMode, quota int64) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return 0, fmt.Errorf("创建目录 %s: %w", filepath.Dir(target), err)
 	}
@@ -108,7 +129,8 @@ func extractFile(f *zip.File, target string, mode os.FileMode) (int64, error) {
 		_ = out.Close()
 		return 0, fmt.Errorf("读取压缩条目 %s: %w", f.Name, err)
 	}
-	n, copyErr := io.Copy(out, rc)
+	// 多读 1 字节用于判断越界，避免把「刚好等于配额」误判为超限。
+	n, copyErr := io.Copy(out, io.LimitReader(rc, quota+1))
 	closeErr := out.Close()
 	_ = rc.Close()
 	if copyErr != nil {
@@ -116,6 +138,11 @@ func extractFile(f *zip.File, target string, mode os.FileMode) (int64, error) {
 	}
 	if closeErr != nil {
 		return n, fmt.Errorf("写入 %s: %w", target, closeErr)
+	}
+	if n > quota {
+		// 不要把写了一半的内容留在盘上。
+		_ = os.Remove(target)
+		return n, fmt.Errorf("解压 %s: 解压后体积超过上限 %d 字节（疑似压缩炸弹）", f.Name, MaxExtractedBytes)
 	}
 	return n, nil
 }

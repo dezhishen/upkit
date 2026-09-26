@@ -310,7 +310,7 @@ func TestInstallFromHTTPEndToEnd(t *testing.T) {
 	sumHex := hex.EncodeToString(sum[:])
 
 	mux := http.NewServeMux()
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewTLSServer(mux)
 	defer srv.Close()
 
 	feedBody := fmt.Sprintf(`
@@ -424,13 +424,13 @@ func TestInstallRequiresAuthorizationForCrossOrigin(t *testing.T) {
 	sumHex := hex.EncodeToString(sum[:])
 
 	// 包放在另一个 server 上，与订阅不同源。
-	pkgSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	pkgSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(payload)
 	}))
 	defer pkgSrv.Close()
 
 	mux := http.NewServeMux()
-	feedSrv := httptest.NewServer(mux)
+	feedSrv := httptest.NewTLSServer(mux)
 	defer feedSrv.Close()
 
 	feedBody := fmt.Sprintf(`
@@ -490,7 +490,7 @@ plugins:
 	if _, err := Install(context.Background(), feedSrv.Client(), req); err != nil {
 		t.Fatalf("授权后应当安装成功: %v", err)
 	}
-	wantHost := strings.TrimPrefix(pkgSrv.URL, "http://")
+	wantHost := strings.TrimPrefix(pkgSrv.URL, "https://")
 	if askedHost != wantHost {
 		t.Fatalf("授权回调拿到的域名是 %q，期望 %q", askedHost, wantHost)
 	}

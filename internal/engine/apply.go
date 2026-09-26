@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -84,6 +85,12 @@ func (e *Engine) Apply(ctx context.Context, id string) (*core.Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 同一个软件串行执行：并发改写同一个 InstallPath 会互相删掉对方刚写入的
+	// 文件，备份目录名只精确到秒也可能碰撞，而结果仍可能是「成功」。
+	lock := e.lockFor(id)
+	lock.Lock()
+	defer lock.Unlock()
+
 	plan := *pp
 	method, err := e.reg.Method(a.Ref, e.deps())
 	if err != nil {
@@ -205,10 +212,23 @@ func (e *Engine) ApplyMany(ctx context.Context, ids []string, concurrency int) [
 	if concurrency <= 0 {
 		concurrency = 2
 	}
-	results := make([]JobResult, len(ids))
+
+	// 去重：同一个 id 出现两次时并发跑，就是两个 goroutine 同时操作同一个
+	// InstallPath，必然互相践踏。
+	uniq := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		uniq = append(uniq, id)
+	}
+
+	results := make([]JobResult, len(uniq))
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
-	for i, id := range ids {
+	for i, id := range uniq {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(i int, id string) {
@@ -227,6 +247,23 @@ func (e *Engine) ApplyMany(ctx context.Context, ids []string, concurrency int) [
 	return results
 }
 
+// lockFor 返回某个软件的互斥锁（不存在则创建）。
+func (e *Engine) lockFor(id string) *sync.Mutex {
+	m, _ := e.locks.LoadOrStore(id, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
+
+// cacheFileName 给缓存产物命名。
+//
+// 键里必须带来源身份：只用 base name 时，两个软件的同名产物（setup.exe、
+// app.zip 极常见）会互相命中 —— A 的安装包被当成 B 的包安装，还会写进 B 的
+// 版本记录，用户看到的是一次「成功」的错误安装。
+func cacheFileName(ref core.AppRef, art core.Artifact) string {
+	sum := sha256.Sum256([]byte(art.URL))
+	return fmt.Sprintf("%s-%x-%s",
+		util.SanitizeFileName(ref.ID), sum[:6], filepath.Base(art.Name))
+}
+
 // Rollback 回滚到指定备份。
 func (e *Engine) Rollback(ctx context.Context, id, backupPath string) error {
 	if backupPath == "" {
@@ -238,6 +275,12 @@ func (e *Engine) Rollback(ctx context.Context, id, backupPath string) error {
 	}
 	a, err := e.ensure(ctx, id)
 	if err != nil {
+		return err
+	}
+	// 回滚同样要先把占着安装目录的进程结束掉：RemoveContents 遇到被占用的文件
+	// 会删一半就失败，目录变成「旧版删了一部分、新版残留一部分」的半成品，
+	// 而备份之外没有可用副本 —— 这正好摧毁了「失败自动回滚」这个承诺。
+	if err := e.ensureNoBlockers(ctx, a.Ref); err != nil {
 		return err
 	}
 	m, err := e.reg.Method(a.Ref, e.deps())
@@ -260,6 +303,10 @@ func (e *Engine) Rollback(ctx context.Context, id, backupPath string) error {
 func (e *Engine) Uninstall(ctx context.Context, id string, keepUserData bool) error {
 	a, err := e.ensure(ctx, id)
 	if err != nil {
+		return err
+	}
+	// 与回滚同理：卸载也是在删目录，被占用的文件会让删除做一半。
+	if err := e.ensureNoBlockers(ctx, a.Ref); err != nil {
 		return err
 	}
 	m, err := e.reg.Method(a.Ref, e.deps())
@@ -379,7 +426,7 @@ func (e *Engine) fetchArtifact(ctx context.Context, ref core.AppRef, plan core.P
 		return res, nil
 	}
 
-	dest := filepath.Join(e.settings.Storage.CacheDir, filepath.Base(art.Name))
+	dest := filepath.Join(e.settings.Storage.CacheDir, cacheFileName(ref, art))
 	e.emit(ref.ID, core.Event{Kind: core.EventPhase, Phase: "下载", Level: core.LevelInfo,
 		Msg: "下载 " + art.Name})
 	dr, err := e.dl.Download(ctx, art.URL, dest, nil, func(done, total int64, speed float64, _ time.Duration) {
@@ -402,7 +449,7 @@ func (e *Engine) fetchArtifact(ctx context.Context, ref core.AppRef, plan core.P
 
 // lookupCache 检查缓存里是否有可复用的产物。
 func (e *Engine) lookupCache(ref core.AppRef, art core.Artifact, expected string) (downloadResult, bool) {
-	path := filepath.Join(e.settings.Storage.CacheDir, filepath.Base(art.Name))
+	path := filepath.Join(e.settings.Storage.CacheDir, cacheFileName(ref, art))
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 		return downloadResult{}, false

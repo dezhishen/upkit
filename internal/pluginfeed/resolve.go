@@ -95,8 +95,14 @@ func parseHTTPURL(raw string) (*url.URL, error) {
 	if err != nil {
 		return nil, err
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("只允许 http/https，收到 %q", u.Scheme)
+	if u.Scheme == "http" {
+		// 明文 HTTP 下链路中间任何人都能整份替换订阅，而清单自带的 sha256
+		// 对「清单本身被换掉」毫无帮助 —— 供应链防线的根在清单来源，
+		// 摘要只保护了清单以下的那一层。
+		return nil, fmt.Errorf("订阅地址必须使用 https（收到 http，明文链路无法保证清单未被篡改）")
+	}
+	if u.Scheme != "https" {
+		return nil, fmt.Errorf("只允许 https，收到 %q", u.Scheme)
 	}
 	if u.Host == "" {
 		return nil, fmt.Errorf("缺少主机名")

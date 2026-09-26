@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,15 +45,19 @@ const (
 	FallbackAppID = "app"
 )
 
-// File 是 apps.yaml 的结构。
+// File 是设置目录下的来源与状态文件。//
+// 只有 Sources、Conflicts、Equivalents、NotEquivalent 会落盘；
+// Apps 是运行时字段（yaml:"-"），启动时由各插件来源填充，用户不手写。
 type File struct {
 	Version       int           `yaml:"version"`
 	Sources       []SourceSpec  `yaml:"sources"`
-	Apps          []AppSpec     `yaml:"apps"`
 	Conflicts     Conflicts     `yaml:"conflicts"`
 	Equivalents   []Equivalence `yaml:"equivalents"`
 	NotEquivalent [][]string    `yaml:"not_equivalent"`
-	Path          string        `yaml:"-"`
+
+	// Apps 由插件提供，不序列化：软件的来源只能是订阅，不能在文件里声明。
+	Apps []AppSpec `yaml:"-"`
+	Path string    `yaml:"-"`
 }
 
 // SourceSpec 描述一个「软件来源」。
@@ -113,7 +116,31 @@ func (s SourceSpec) AppEnabled(appID string) bool {
 	return true
 }
 
+// SourceAppEnabled 报告某个来源内某个软件是否启用（来源不存在时视为启用）。
+func (f *File) SourceAppEnabled(sourceID, appID string) bool {
+	for _, s := range f.Sources {
+		if s.ID == sourceID {
+			return s.AppEnabled(appID)
+		}
+	}
+	return true
+}
+
+// SetAppEnabled 记录源内某个软件的启用状态（就地修改，由调用方负责落盘）。
+func (s *SourceSpec) SetAppEnabled(appID string, enabled bool) {
+	v := enabled
+	for i := range s.Apps {
+		if s.Apps[i].ID == appID {
+			s.Apps[i].Enabled = &v
+			return
+		}
+	}
+	s.Apps = append(s.Apps, SourceAppSpec{ID: appID, Enabled: &v})
+}
+
 // AppSpec 是单个软件的声明。
+//
+// 它由插件来源提供（不再从文件读取），字段保留 yaml tag 只为导出与调试可读。
 type AppSpec struct {
 	ID      string         `yaml:"id"`
 	Name    string         `yaml:"name"`
@@ -433,14 +460,45 @@ func (f *File) Find(id string) (int, bool) {
 }
 
 // SetEnabled 修改启用状态并写回。
+//
+// 状态落在来源声明（sources[].apps[]）上，而不是运行时内存里的 AppSpec ——
+// 后者每次启动都由插件重新生成，写在它上面重启就没了。
 func (f *File) SetEnabled(id string, enabled bool) error {
 	i, ok := f.Find(id)
 	if !ok {
 		return fmt.Errorf("未找到软件 %q", id)
 	}
-	v := enabled
-	f.Apps[i].Enabled = &v
-	return f.Save()
+	sourceID, ok := SourceIDOf(f.Apps[i])
+	if !ok {
+		return fmt.Errorf("软件 %q 不属于任何可持久化的来源，无法保存启用状态", id)
+	}
+	for si := range f.Sources {
+		if f.Sources[si].ID != sourceID {
+			continue
+		}
+		v := enabled
+		f.Apps[i].Enabled = &v                             // 立即在内存生效，界面马上能看到
+		f.Sources[si].SetAppEnabled(f.Apps[i].ID, enabled) // 落盘，重启后仍然生效
+		return f.Save()
+	}
+	return fmt.Errorf("软件 %q 的来源 %q 未在来源列表中找到", id, sourceID)
+}
+
+// SourceIDOf 从软件声明里解析出它所属的来源 ID。
+//
+// 插件来源的类型写成 plugin:<来源ID>，因此来源 ID 就是前缀之后的部分。
+func SourceIDOf(spec AppSpec) (string, bool) {
+	kind, _ := spec.Source[KeyKind].(string)
+	if kind == "" {
+		if alias, ok := spec.Source[KeyKindAlias].(string); ok {
+			kind = alias
+		}
+	}
+	id, ok := strings.CutPrefix(kind, SourceKindPluginPrefix)
+	if !ok || id == "" {
+		return "", false
+	}
+	return id, true
 }
 
 // Enabled 返回某个软件是否启用（未声明时默认启用）。
@@ -451,6 +509,3 @@ func (f *File) Enabled(id string) bool {
 	}
 	return f.Apps[i].EnabledValue()
 }
-
-// ExamplePath 返回清单的相对示例文件路径（仅用于报错提示）。
-func ExamplePath() string { return filepath.Join("configs", "apps.example.yaml") }

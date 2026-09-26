@@ -1,19 +1,22 @@
 // Package logging 提供结构化日志（JSONL）、内存环形缓冲与审计日志。
 //
-// 只依赖标准库的 log/slog；文件按大小/数量/天数轮转，敏感字段自动脱敏。
+// 格式化与输出用 go.uber.org/zap，文件轮转用 lumberjack；
+// 敏感字段脱敏由本包实现（zap 不自带，见 zap.go 的 redactCore）。
 package logging
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/dezhishen/upkit/internal/core"
 )
@@ -46,9 +49,11 @@ type Record struct {
 // Manager 统一管理日志与审计。
 type Manager struct {
 	opts Options
-	file *rotatingFile
 	ring *Ring
 	core.Logger
+
+	// closer 负责关闭轮转器（lumberjack 实现了 io.Closer）。
+	closer io.Closer
 
 	mu        sync.Mutex
 	auditFile *os.File
@@ -66,35 +71,13 @@ func New(opts Options) (*Manager, error) {
 		m.opts.RunID = opts.RunID
 	}
 
-	var handlers []slog.Handler
 	if strings.TrimSpace(opts.Dir) != "" {
-		if err := os.MkdirAll(opts.Dir, 0o755); err == nil {
-			rf, err := newRotatingFile(opts)
-			if err == nil {
-				m.file = rf
-				handlers = append(handlers, slog.NewJSONHandler(rf, &slog.HandlerOptions{Level: levelOf(opts.Level)}))
-			}
-		}
-	}
-	if opts.Console {
-		handlers = append(handlers, newConsoleHandler(os.Stderr, levelOf(opts.Level)))
+		_ = os.MkdirAll(opts.Dir, 0o755)
 	}
 
-	var base slog.Handler
-	switch len(handlers) {
-	case 0:
-		base = slog.NewJSONHandler(io_Discard{}, &slog.HandlerOptions{Level: levelOf(opts.Level)})
-	case 1:
-		base = handlers[0]
-	default:
-		base = fanout{handlers}
-	}
-	if opts.Redact {
-		base = &redactHandler{inner: base}
-	}
-
-	base = &ringHandler{inner: base, ring: m.ring, runID: m.opts.RunID}
-	m.Logger = &adapter{log: slog.New(base), runID: m.opts.RunID}
+	logger, closer := newZapLogger(opts, m.ring, m.opts.RunID)
+	m.closer = closer
+	m.Logger = &adapter{log: logger}
 
 	if opts.Audit && strings.TrimSpace(opts.Dir) != "" {
 		m.auditPath = filepath.Join(opts.Dir, "audit.jsonl")
@@ -143,8 +126,8 @@ func (m *Manager) Close() error {
 		_ = m.auditFile.Close()
 		m.auditFile = nil
 	}
-	if m.file != nil {
-		return m.file.Close()
+	if m.closer != nil {
+		return m.closer.Close()
 	}
 	return nil
 }
@@ -152,207 +135,220 @@ func (m *Manager) Close() error {
 // ── core.Logger 适配 ──────────────────────────────────────────
 
 type adapter struct {
-	log   *slog.Logger
-	runID string
+	log *zap.Logger
 }
 
-func (a *adapter) with(kv []any) *slog.Logger {
-	return a.log.With(attrs(kv)...)
-}
-
-func (a *adapter) Debug(msg string, kv ...any) { a.with(kv).Debug(msg) }
-func (a *adapter) Info(msg string, kv ...any)  { a.with(kv).Info(msg) }
-func (a *adapter) Warn(msg string, kv ...any)  { a.with(kv).Warn(msg) }
-func (a *adapter) Error(msg string, kv ...any) { a.with(kv).Error(msg) }
+func (a *adapter) Debug(msg string, kv ...any) { a.log.Debug(msg, toFields(kv)...) }
+func (a *adapter) Info(msg string, kv ...any)  { a.log.Info(msg, toFields(kv)...) }
+func (a *adapter) Warn(msg string, kv ...any)  { a.log.Warn(msg, toFields(kv)...) }
+func (a *adapter) Error(msg string, kv ...any) { a.log.Error(msg, toFields(kv)...) }
 
 func (a *adapter) With(kv ...any) core.Logger {
-	return &adapter{log: a.with(kv), runID: a.runID}
+	return &adapter{log: a.log.With(toFields(kv)...)}
 }
 
-// attrs 把 kv 展开成 slog.Attr；奇数个时补 "!BADKEY"。
-func attrs(kv []any) []any {
-	out := make([]any, 0, len(kv))
-	for i, v := range kv {
-		if i%2 == 1 {
-			continue
-		}
-		key, ok := v.(string)
-		if !ok {
-			key = fmt.Sprintf("key%d", i)
-		}
-		if i+1 < len(kv) {
-			out = append(out, slog.Any(key, kv[i+1]))
-		} else {
-			out = append(out, slog.String(key, "<missing>"))
-		}
-	}
-	return out
-}
+var sensitiveKeys = []string{"token", "password", "authorization", "secret", "apikey", "api_key", "cookie"}
 
-func levelOf(level string) slog.Level {
-	switch strings.ToLower(level) {
-	case "trace", "debug":
-		return slog.LevelDebug
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
-}
+// redacted 是替换后的占位符。
+const redacted = "***"
 
-// fanout 把日志同时写到多个 handler。
-type fanout struct{ hs []slog.Handler }
-
-func (f fanout) Enabled(ctx context.Context, l slog.Level) bool {
-	for _, h := range f.hs {
-		if h.Enabled(ctx, l) {
+// isSensitiveKey 判断字段名本身是否携带凭据。
+func isSensitiveKey(key string) bool {
+	k := strings.ToLower(key)
+	for _, s := range sensitiveKeys {
+		if strings.Contains(k, s) {
 			return true
 		}
 	}
 	return false
 }
 
-func (f fanout) Handle(ctx context.Context, r slog.Record) error {
-	var firstErr error
-	for _, h := range f.hs {
-		if err := h.Handle(ctx, r.Clone()); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
+// credentialKeys 是文本里可能跟随凭据的键名（小写；匹配时按 ASCII 大小写不敏感）。
+//
+// 只写键名不写「键=」是因为值可能用 = 或 : 两种写法：
+//
+//	?token=abc          （query）
+//	{"token":"abc"}     （JSON）
+var credentialKeys = []string{
+	"token", "password", "passwd", "secret", "apikey", "api_key",
+	"authorization", "cookie",
 }
 
-func (f fanout) WithAttrs(as []slog.Attr) slog.Handler {
-	out := make([]slog.Handler, 0, len(f.hs))
-	for _, h := range f.hs {
-		out = append(out, h.WithAttrs(as))
-	}
-	return fanout{out}
-}
-
-func (f fanout) WithGroup(name string) slog.Handler {
-	out := make([]slog.Handler, 0, len(f.hs))
-	for _, h := range f.hs {
-		out = append(out, h.WithGroup(name))
-	}
-	return fanout{out}
-}
-
-// redactHandler 对敏感键做脱敏。
-type redactHandler struct{ inner slog.Handler }
-
-var sensitiveKeys = []string{"token", "password", "authorization", "secret", "apikey", "api_key", "cookie"}
-
-func (h *redactHandler) Enabled(ctx context.Context, l slog.Level) bool {
-	return h.inner.Enabled(ctx, l)
-}
-
-func (h *redactHandler) Handle(ctx context.Context, r slog.Record) error {
-	out := slog.NewRecord(r.Time, r.Level, redactText(r.Message), r.PC)
-	r.Attrs(func(a slog.Attr) bool {
-		out.AddAttrs(redactAttr(a))
-		return true
-	})
-	return h.inner.Handle(ctx, out)
-}
-
-func (h *redactHandler) WithAttrs(as []slog.Attr) slog.Handler {
-	red := make([]slog.Attr, 0, len(as))
-	for _, a := range as {
-		red = append(red, redactAttr(a))
-	}
-	return &redactHandler{inner: h.inner.WithAttrs(red)}
-}
-
-func (h *redactHandler) WithGroup(name string) slog.Handler {
-	return &redactHandler{inner: h.inner.WithGroup(name)}
-}
-
-func redactAttr(a slog.Attr) slog.Attr {
-	key := strings.ToLower(a.Key)
-	for _, s := range sensitiveKeys {
-		if strings.Contains(key, s) {
-			return slog.String(a.Key, "***")
-		}
-	}
-	if a.Value.Kind() == slog.KindString {
-		return slog.String(a.Key, redactText(a.Value.String()))
-	}
-	return a
-}
-
-// redactText 抹掉 URL 里可能的 token 参数。
+// redactText 抹掉字符串里可能出现的凭据。
+//
+// 分两条路径：
+//   - 整串就是一个绝对 URL 时做结构化替换（按参数名替换值，其余原样保留）；
+//   - 其余情况按键名做就地替换。
+//
+// 两条路径都在有限步内结束，不依赖调用方超时。
 func redactText(s string) string {
 	if s == "" {
 		return s
 	}
-	lower := strings.ToLower(s)
-	for _, marker := range []string{"token=", "access_token=", "password="} {
-		for {
-			i := strings.Index(lower, marker)
+	if u, ok := parseAbsoluteURL(s); ok {
+		return redactURL(u)
+	}
+	return redactInline(s)
+}
+
+// parseAbsoluteURL 判断 s 是否整体就是一个绝对 URL。
+//
+// 要求不含空白字符，避免把「拉取 https://… 失败」这类整句日志当成 URL 解析而丢掉原文。
+func parseAbsoluteURL(s string) (*url.URL, bool) {
+	if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
+		return nil, false
+	}
+	if strings.ContainsAny(s, " \t\r\n") {
+		return nil, false
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return nil, false
+	}
+	return u, true
+}
+
+// redactURL 结构化抹掉 URL 中的凭据：query 里的敏感参数与 userinfo 里的密码。
+//
+// 与就地替换相比，它按参数边界取值，不会误伤 value 之外的内容，
+// 也不存在「写回去的 *** 又被下一轮匹配到」的隐患。
+func redactURL(u *url.URL) string {
+	out := *u
+	changed := false
+	if out.User != nil {
+		if _, ok := out.User.Password(); ok {
+			out.User = url.UserPassword(out.User.Username(), redacted)
+			changed = true
+		}
+	}
+	if out.RawQuery != "" {
+		q := out.Query()
+		for k := range q {
+			if isSensitiveKey(k) {
+				q.Set(k, redacted)
+				changed = true
+			}
+		}
+		if changed {
+			out.RawQuery = q.Encode()
+		}
+	}
+	if !changed {
+		return out.String()
+	}
+	// Encode 把占位符里的 * 转义成 %2A，写进日志后看不出是脱敏标记；
+	// 而 * 与 %2A 在 URL 里语义相同，替换回去无损（字面量 %2A 会被编码成 %252A，不受影响）。
+	return strings.ReplaceAll(out.String(), "%2A", "*")
+}
+
+// redactInline 就地把凭据值替换成 redacted。
+//
+// 两处必须成立的不变量：
+//  1. 找到键名后要先确认它确实是一个键（后接 = 或 : 或引号），否则 tokenizer 这类
+//     普通单词会被误伤；
+//  2. 每一轮 pos 都必须前进，否则写到串里的 redacted 会让下一轮又匹配到自己。
+//     旧实现正是缺了第 2 条：它每次都从新串的头部重新查找，而 "token=***" 里仍然
+//     含有 "token="，于是 s 在 "token=***" 上原地自转，永不退出。
+func redactInline(s string) string {
+	for _, key := range credentialKeys {
+		pos := 0
+		for pos < len(s) {
+			i := indexFoldASCII(s[pos:], key)
 			if i < 0 {
 				break
 			}
-			start := i + len(marker)
-			end := start
-			for end < len(s) && s[end] != '&' && s[end] != ' ' && s[end] != '"' {
-				end++
+			keyStart := pos + i
+			keyEnd := keyStart + len(key)
+
+			// 不是键（例如 tokenizer、tokenizeCount）就跳过这个词继续找。
+			if keyEnd >= len(s) || !isKeyTerminator(s[keyEnd]) {
+				pos = keyEnd
+				continue
 			}
-			s = s[:start] + "***" + s[end:]
-			lower = strings.ToLower(s)
+			// 越过 = / : / 引号，定位到值的起点。
+			valStart := keyEnd
+			for valStart < len(s) && isKeySeparator(s[valStart]) {
+				valStart++
+			}
+			valEnd := valStart
+			spansSpace := keySpansSpace(key)
+			for valEnd < len(s) && !credentialValueEndsAt(s, valEnd, spansSpace) {
+				valEnd++
+			}
+			s = s[:valStart] + redacted + s[valEnd:]
+			pos = valStart + len(redacted) // 跳过刚写入的占位符，保证前进
 		}
 	}
 	return s
 }
 
-// io_Discard 避免 import io 只为 Discard。
-type io_Discard struct{}
-
-func (io_Discard) Write(p []byte) (int, error) { return len(p), nil }
-
-// ringHandler 把日志同时写入内存环形缓冲，供 TUI 的 Logs 面板展示。
-type ringHandler struct {
-	inner slog.Handler
-	ring  *Ring
-	runID string
-}
-
-func (h *ringHandler) Enabled(ctx context.Context, l slog.Level) bool {
-	return h.inner.Enabled(ctx, l)
-}
-
-func (h *ringHandler) Handle(ctx context.Context, r slog.Record) error {
-	rec := Record{
-		At:    r.Time,
-		Level: r.Level.String(),
-		Msg:   r.Message,
-		KV:    map[string]any{},
+// credentialValueEndsAt 判断位置 i 是否是凭据值的结束处。
+//
+// 空白要单独判断：它通常终止一个值（token=abc 后面的空格），
+// 但 authorization 的值本身含空格（Bearer <token>），此时不能停。
+func credentialValueEndsAt(s string, i int, spansSpace bool) bool {
+	c := s[i]
+	if c == ' ' || c == '\t' {
+		return !spansSpace
 	}
-	r.Attrs(func(a slog.Attr) bool {
-		switch a.Key {
-		case "app":
-			rec.App = a.Value.String()
-		case "phase":
-			rec.Phase = a.Value.String()
-		}
-		rec.KV[a.Key] = a.Value.Any()
+	return isCredentialDelimiter(c)
+}
+
+// keySpansSpace 报告该键的值是否会包含空格。
+//
+// authorization 的值形如 "Bearer <token>"，只抹掉 Bearer 会把后面的 token 留在日志里。
+func keySpansSpace(key string) bool {
+	return key == "authorization"
+}
+
+// isKeyTerminator 判断键名之后的字节是否说明它真的是个键。
+func isKeyTerminator(c byte) bool {
+	return c == '=' || c == ':' || c == '"'
+}
+
+// isKeySeparator 是键与值之间的连接符。
+func isKeySeparator(c byte) bool {
+	return c == '=' || c == ':' || c == '"'
+}
+
+// isCredentialDelimiter 判断字节是否终止一个凭据值。
+//
+// 分隔符取宽一些：多抹（把值截短）只是可读性损失，漏抹则是凭据泄漏。
+func isCredentialDelimiter(c byte) bool {
+	switch c {
+	case '&', ' ', '\t', '\r', '\n', '"', '\'', '`', ',', ';', ')', ']', '}':
 		return true
-	})
-	h.ring.Add(rec)
-	return h.inner.Handle(ctx, r)
+	}
+	return false
 }
 
-func (h *ringHandler) WithAttrs(as []slog.Attr) slog.Handler {
-	return &ringHandler{inner: h.inner.WithAttrs(as), ring: h.ring, runID: h.runID}
+// indexFoldASCII 在 s 中查找 needle，仅对 ASCII 字母做大小写折叠。
+//
+// 与 strings.ToLower 不同，它不改变字节长度，所以返回的偏移可直接用于切分 s。
+// 旧实现拿 ToLower 的结果算偏移、再去切原串，遇到 K（U+212A）这类折叠后字节数
+// 变化的字符时会错位。needle 必须是小写 ASCII。
+func indexFoldASCII(s, needle string) int {
+	if needle == "" {
+		return 0
+	}
+	for i := 0; i+len(needle) <= len(s); i++ {
+		j := 0
+		for ; j < len(needle); j++ {
+			c := s[i+j]
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != needle[j] {
+				break
+			}
+		}
+		if j == len(needle) {
+			return i
+		}
+	}
+	return -1
 }
 
-func (h *ringHandler) WithGroup(name string) slog.Handler {
-	return &ringHandler{inner: h.inner.WithGroup(name), ring: h.ring, runID: h.runID}
-}
-
-// Ring 是固定容量的环形缓冲。
 type Ring struct {
 	mu   sync.RWMutex
 	data []Record

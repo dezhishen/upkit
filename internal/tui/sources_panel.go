@@ -350,19 +350,15 @@ func (m Model) editConfigField(spec apps.SourceSpec, row configRow) (tea.Model, 
 	if row.Help != "" {
 		label = row.Help
 	}
-	m.prompt = &promptBox{
-		Title: "编辑 " + row.Label,
-		Label: label,
-		Buf:   row.Value,
-		Apply: func(mm *Model, v string) tea.Cmd {
+	m.prompt = newPromptBox("编辑 "+row.Label, label, row.Value, false,
+		func(mm *Model, v string) tea.Cmd {
 			v = strings.TrimSpace(v)
 			if required && v == "" {
 				mm.setStatusErr(fmt.Errorf("%s 是必填项", label))
 				return nil
 			}
 			return mm.writeSourceConfig(id, key, v)
-		},
-	}
+		})
 	return m, nil
 }
 
@@ -483,11 +479,8 @@ func (m Model) addBuiltinSubscription() (tea.Model, tea.Cmd) {
 // 返回而不是直接设置 m.prompt：调用方多为值接收者，直接改字段会丢。
 func (m Model) subscriptionURLPrompt(prefill string) *promptBox {
 	feed := m.feed
-	return &promptBox{
-		Title: "添加订阅",
-		Label: "订阅地址（.json / .yaml / .yml）",
-		Buf:   prefill,
-		Apply: func(mm *Model, v string) tea.Cmd {
+	return newPromptBox("添加订阅", "订阅地址（.json / .yaml / .yml）", prefill, false,
+		func(mm *Model, v string) tea.Cmd {
 			raw := strings.TrimSpace(v)
 			if raw == "" {
 				return nil
@@ -513,8 +506,7 @@ func (m Model) subscriptionURLPrompt(prefill string) *promptBox {
 				},
 			}
 			return nil
-		},
-	}
+		})
 }
 
 func (m Model) removeSubscription(rows []sourceRow) (tea.Model, tea.Cmd) {

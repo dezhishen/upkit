@@ -13,6 +13,7 @@ import (
 
 	"github.com/dezhishen/upkit/internal/fsutil"
 	"github.com/dezhishen/upkit/internal/pluginhost"
+	"github.com/dezhishen/upkit/internal/util"
 )
 
 // MaxPackageBytes 是单个插件包的大小上限。
@@ -217,8 +218,12 @@ func (p *progressReader) Read(b []byte) (int, error) {
 }
 
 // cacheName 是包在缓存里的文件名（带版本与平台，避免不同版本互相覆盖）。
+//
+// 版本号在 schema 层已限制字符集；这里再过一道 SanitizeFileName，
+// 保证即使以后有人放宽校验，也不会把路径分隔符带进文件名。
 func cacheName(e Entry) string {
-	return fmt.Sprintf("%s-%s-%s", e.Plugin.ID, firstNonEmpty(e.Plugin.Version, "unknown"), strings.ReplaceAll(Platform(), "/", "-"))
+	v := util.SanitizeFileName(firstNonEmpty(e.Plugin.Version, "unknown"))
+	return fmt.Sprintf("%s-%s-%s", e.Plugin.ID, v, strings.ReplaceAll(Platform(), "/", "-"))
 }
 
 func sha256Hex(data []byte) string {

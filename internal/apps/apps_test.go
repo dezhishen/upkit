@@ -3,6 +3,7 @@ package apps
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -107,19 +108,27 @@ func TestBuildValidation(t *testing.T) {
 	}
 }
 
-// 启用状态：未声明默认启用，SetEnabled 会写回文件。
-func TestEnabledRoundTrip(t *testing.T) {
+// 启用状态：软件由插件提供（不从文件读），启停开关落在来源声明上并写回文件。
+func TestSourceAppEnabledRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "apps.yaml")
 	writeFile(t, path, `version: 2
-apps:
-  - id: demo
-    install:
-      path: /tmp/demo
+sources:
+  - id: demo-src
+    kind: plugin
+    exec: demo-src.exe
 `)
 	f, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	// 插件提供的软件是运行时字段，这里直接模拟插件已填充。
+	f.Apps = []AppSpec{{
+		ID:      "demo",
+		Name:    "Demo",
+		Source:  map[string]any{"kind": "plugin:demo-src", "app": "demo"},
+		Install: InstallSpec{Path: "/tmp/demo"},
+	}}
+
 	if !f.Enabled("demo") {
 		t.Fatalf("未声明 enabled 时应默认启用")
 	}
@@ -127,37 +136,32 @@ apps:
 		t.Fatalf("SetEnabled: %v", err)
 	}
 	if f.Enabled("demo") {
-		t.Fatalf("停用未生效")
+		t.Fatalf("停用未在内存生效")
 	}
+
 	again, err := Load(path)
 	if err != nil {
 		t.Fatalf("重新加载: %v", err)
 	}
-	if again.Enabled("demo") {
-		t.Fatalf("停用状态未落盘")
+	if again.SourceAppEnabled("demo-src", "demo") {
+		t.Fatalf("停用状态未落盘到来源声明")
 	}
 }
 
-// 示例清单必须能被解析并构建成可用的 AppRef（防止示例与实际 schema 漂移）。
-func TestExampleAppsManifest(t *testing.T) {
-	path := filepath.Join("..", "..", "configs", "apps.example.yaml")
-	if _, err := os.Stat(path); err != nil {
-		t.Skipf("示例清单不存在: %v", err)
+// 软件不由文件声明：写进去的 apps 段会被严格模式拒绝，避免回退到手工清单。
+func TestAppsFieldIsNotSerialized(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apps.yaml")
+	f := Default()
+	f.Path = path
+	f.Apps = []AppSpec{{ID: "demo", Install: InstallSpec{Path: "/tmp/demo"}}}
+	if err := f.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
 	}
-	f, err := Load(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("示例清单无法解析: %v", err)
+		t.Fatalf("读取: %v", err)
 	}
-	refs, err := f.Build()
-	if err != nil {
-		t.Fatalf("示例清单构建失败: %v", err)
-	}
-	if len(refs) == 0 {
-		t.Fatalf("示例清单应至少包含一个软件")
-	}
-	for _, r := range refs {
-		if r.InstallPath == "" || r.Method == "" || r.Source == "" {
-			t.Fatalf("示例条目不完整: %+v", r)
-		}
+	if strings.Contains(string(data), "demo") {
+		t.Fatalf("运行时软件条目不应落盘，实际写入：\n%s", data)
 	}
 }

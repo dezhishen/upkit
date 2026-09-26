@@ -64,7 +64,13 @@ func IsDowngrade(from, to string) bool {
 }
 
 func splitVersion(v string) []string {
-	return strings.FieldsFunc(strings.TrimSpace(v), func(r rune) bool {
+	s := strings.TrimSpace(v)
+	// 统一剥掉 v 前缀：v1.2.0 与 1.2.0 是同一个版本。
+	// 不剥的话 "v1" 会被当成非数字段，与数字段 "1" 比较时得出错误结论，
+	// 进而把新版本判成降级而拒装。
+	s = strings.TrimPrefix(s, "v")
+	s = strings.TrimPrefix(s, "V")
+	return strings.FieldsFunc(s, func(r rune) bool {
 		return r == '.' || r == '-' || r == '+' || r == '_'
 	})
 }
@@ -101,6 +107,49 @@ func compareSegment(x, y string) int {
 	case yerr == nil:
 		return -1
 	default:
-		return strings.Compare(x, y)
+		return comparePrerelease(x, y)
 	}
+}
+
+// comparePrerelease 比较两个非数字段（如 rc1 与 rc10）。
+//
+// 直接字典序会得出 rc9 > rc10（'9' > '1'），于是把降级判成升级、
+// 使降级保护正好在它要防的场景下失效。这里按「公共前缀 + 末尾数字的数值」比较，
+// 因此 rc1 < rc2 < rc10，而 alpha < beta。
+func comparePrerelease(x, y string) int {
+	xp, xn, xok := splitTrailingNumber(x)
+	yp, yn, yok := splitTrailingNumber(y)
+	if c := strings.Compare(xp, yp); c != 0 {
+		return c
+	}
+	switch {
+	case !xok && !yok:
+		return 0
+	case !xok:
+		return -1 // 无数字后缀 < 有数字后缀（rc < rc1）
+	case !yok:
+		return 1
+	case xn < yn:
+		return -1
+	case xn > yn:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// splitTrailingNumber 把 "rc12" 拆成 ("rc", 12, true)；没有数字后缀时第三位为 false。
+func splitTrailingNumber(s string) (string, int, bool) {
+	i := len(s)
+	for i > 0 && s[i-1] >= '0' && s[i-1] <= '9' {
+		i--
+	}
+	if i == len(s) {
+		return s, 0, false
+	}
+	n, err := strconv.Atoi(s[i:])
+	if err != nil {
+		return s, 0, false
+	}
+	return s[:i], n, true
 }

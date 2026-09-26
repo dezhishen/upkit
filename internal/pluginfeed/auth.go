@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -71,6 +72,14 @@ func (s Subscription) TTL() time.Duration {
 // Store 是授权记录的读写入口。
 type Store struct {
 	path string
+
+	// mu 保护 auth 与写盘。
+	//
+	// Store 会被 UI 线程（增删订阅、改启停）与 tea.Cmd 的 goroutine
+	// （安装时查授权）同时访问：没有锁时，一边 append/替换 Subscriptions
+	// 切片、另一边读同一片内存，是真实的 data race（-race 可复现），
+	// 并发 Save 还会丢更新。
+	mu   sync.RWMutex
 	auth Authorization
 }
 
@@ -100,8 +109,15 @@ func (s *Store) Path() string { return s.path }
 // Authorization 返回记录的快照。
 func (s *Store) Authorization() Authorization { return s.auth }
 
-// Save 原子写回记录。
+// Save 原子写回记录（自带加锁，供外部调用）。
 func (s *Store) Save() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked()
+}
+
+// saveLocked 与 Save 相同，但要求调用方已持写锁。
+func (s *Store) saveLocked() error {
 	data, err := yaml.Marshal(&s.auth)
 	if err != nil {
 		return fmt.Errorf("序列化订阅记录: %w", err)
@@ -116,25 +132,31 @@ func (s *Store) FeatureAuthorized() bool { return s.auth.FeatureAuthorized }
 //
 // 必须由界面在用户确认后调用：订阅会把网络上的二进制装到本机并执行。
 func (s *Store) AuthorizeFeature() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.auth.FeatureAuthorized {
 		return nil
 	}
 	s.auth.FeatureAuthorized = true
 	s.auth.FeatureAuthorizedAt = time.Now()
-	return s.Save()
+	return s.saveLocked()
 }
 
 // RevokeFeature 关闭订阅功能（保留已添加的订阅记录，只是不再拉取）。
 func (s *Store) RevokeFeature() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.auth.FeatureAuthorized {
 		return nil
 	}
 	s.auth.FeatureAuthorized = false
-	return s.Save()
+	return s.saveLocked()
 }
 
 // Subscriptions 返回全部订阅（复制一份，避免调用方改动内部状态）。
 func (s *Store) Subscriptions() []Subscription {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := make([]Subscription, len(s.auth.Subscriptions))
 	copy(out, s.auth.Subscriptions)
 	return out
@@ -142,6 +164,8 @@ func (s *Store) Subscriptions() []Subscription {
 
 // EnabledSubscriptions 返回已启用的订阅。
 func (s *Store) EnabledSubscriptions() []Subscription {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := make([]Subscription, 0, len(s.auth.Subscriptions))
 	for _, sub := range s.auth.Subscriptions {
 		if sub.EnabledValue() {
@@ -153,6 +177,13 @@ func (s *Store) EnabledSubscriptions() []Subscription {
 
 // Subscription 按 URL 查找订阅。
 func (s *Store) Subscription(rawURL string) (Subscription, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.subscriptionLocked(rawURL)
+}
+
+// subscriptionLocked 与 Subscription 相同，但要求调用方已持锁。
+func (s *Store) subscriptionLocked(rawURL string) (Subscription, bool) {
 	for _, sub := range s.auth.Subscriptions {
 		if sub.URL == rawURL {
 			return sub, true
@@ -168,6 +199,8 @@ func (s *Store) Subscription(rawURL string) (Subscription, bool) {
 //
 // 功能开关在这里再强制一次：默认关闭，仅靠界面不点按钮是不够的。
 func (s *Store) AddSubscription(rawURL string) (Subscription, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.auth.FeatureAuthorized {
 		return Subscription{}, fmt.Errorf("订阅功能尚未启用：请先在界面上确认启用（默认关闭）")
 	}
@@ -175,7 +208,7 @@ func (s *Store) AddSubscription(rawURL string) (Subscription, error) {
 	if err != nil {
 		return Subscription{}, err
 	}
-	if _, exists := s.Subscription(rawURL); exists {
+	if _, exists := s.subscriptionLocked(rawURL); exists {
 		return Subscription{}, fmt.Errorf("订阅已存在: %s", rawURL)
 	}
 	sub := Subscription{
@@ -184,7 +217,7 @@ func (s *Store) AddSubscription(rawURL string) (Subscription, error) {
 		AddedAt: time.Now(),
 	}
 	s.auth.Subscriptions = append(s.auth.Subscriptions, sub)
-	if err := s.Save(); err != nil {
+	if err := s.saveLocked(); err != nil {
 		return Subscription{}, err
 	}
 	return sub, nil
@@ -195,6 +228,8 @@ func (s *Store) AddSubscription(rawURL string) (Subscription, error) {
 // 只删除订阅本身：为跨域下载授权过的域名保持授权（可能被其它订阅复用），
 // 需要收紧时在界面上单独撤销域名授权。
 func (s *Store) RemoveSubscription(rawURL string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	kept := make([]Subscription, 0, len(s.auth.Subscriptions))
 	found := false
 	for _, sub := range s.auth.Subscriptions {
@@ -208,24 +243,28 @@ func (s *Store) RemoveSubscription(rawURL string) error {
 		return fmt.Errorf("订阅不存在: %s", rawURL)
 	}
 	s.auth.Subscriptions = kept
-	return s.Save()
+	return s.saveLocked()
 }
 
 // SetSubscriptionEnabled 启用或停用一条订阅。
 func (s *Store) SetSubscriptionEnabled(rawURL string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for i := range s.auth.Subscriptions {
 		if s.auth.Subscriptions[i].URL != rawURL {
 			continue
 		}
 		v := enabled
 		s.auth.Subscriptions[i].Enabled = &v
-		return s.Save()
+		return s.saveLocked()
 	}
 	return fmt.Errorf("订阅不存在: %s", rawURL)
 }
 
 // MarkFetched 记录一次拉取的结果。
 func (s *Store) MarkFetched(rawURL string, fetchErr error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for i := range s.auth.Subscriptions {
 		if s.auth.Subscriptions[i].URL != rawURL {
 			continue
@@ -236,13 +275,20 @@ func (s *Store) MarkFetched(rawURL string, fetchErr error) error {
 		} else {
 			s.auth.Subscriptions[i].LastError = fetchErr.Error()
 		}
-		return s.Save()
+		return s.saveLocked()
 	}
 	return fmt.Errorf("订阅不存在: %s", rawURL)
 }
 
 // HostAuthorized 报告某个域名是否已授权用于跨域包下载。
 func (s *Store) HostAuthorized(host string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.hostAuthorizedLocked(host)
+}
+
+// hostAuthorizedLocked 与 HostAuthorized 相同，但要求调用方已持锁。
+func (s *Store) hostAuthorizedLocked(host string) bool {
 	host = normalizeHost(host)
 	for _, h := range s.auth.PackageHosts {
 		if h.Host == host {
@@ -256,6 +302,8 @@ func (s *Store) HostAuthorized(host string) bool {
 //
 // 必须由界面在用户确认后调用：非相对路径的包地址意味着订阅可以把下载指到别处。
 func (s *Store) AuthorizeHost(host, forSubscription string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.auth.FeatureAuthorized {
 		return fmt.Errorf("订阅功能尚未启用：请先在界面上确认启用（默认关闭）")
 	}
@@ -263,7 +311,7 @@ func (s *Store) AuthorizeHost(host, forSubscription string) error {
 	if host == "" {
 		return fmt.Errorf("域名为空")
 	}
-	if s.HostAuthorized(host) {
+	if s.hostAuthorizedLocked(host) {
 		return nil
 	}
 	s.auth.PackageHosts = append(s.auth.PackageHosts, HostAuthorization{
@@ -271,11 +319,13 @@ func (s *Store) AuthorizeHost(host, forSubscription string) error {
 		AuthorizedAt:    time.Now(),
 		ForSubscription: forSubscription,
 	})
-	return s.Save()
+	return s.saveLocked()
 }
 
 // RevokeHost 撤销某个域名的下载授权。
 func (s *Store) RevokeHost(host string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	host = normalizeHost(host)
 	kept := make([]HostAuthorization, 0, len(s.auth.PackageHosts))
 	found := false
@@ -290,11 +340,13 @@ func (s *Store) RevokeHost(host string) error {
 		return fmt.Errorf("域名未授权: %s", host)
 	}
 	s.auth.PackageHosts = kept
-	return s.Save()
+	return s.saveLocked()
 }
 
 // PackageHosts 返回全部已授权的下载域名。
 func (s *Store) PackageHosts() []HostAuthorization {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := make([]HostAuthorization, len(s.auth.PackageHosts))
 	copy(out, s.auth.PackageHosts)
 	return out

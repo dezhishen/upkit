@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -112,18 +113,39 @@ func TestModals(t *testing.T) {
 		t.Fatalf("按 n 应关闭弹窗")
 	}
 
-	m.prompt = &promptBox{Title: "路径", Label: "输入", Buf: "abc"}
+	m.prompt = newPromptBox("路径", "输入", "abc", false, nil)
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	if m.prompt == nil || m.prompt.Buf != "abcd" {
+	if m.prompt == nil || m.prompt.Input.Value() != "abcd" {
 		t.Fatalf("输入未追加: %+v", m.prompt)
 	}
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
-	if m.prompt.Buf != "abc" {
+	if m.prompt.Input.Value() != "abc" {
 		t.Fatalf("退格未生效: %+v", m.prompt)
 	}
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.prompt != nil {
 		t.Fatalf("按 Esc 应关闭输入框")
+	}
+}
+
+// 输入框必须接受非 ASCII：Windows 中文用户名下的路径（C:\Users\张三\...）极常见，
+// 手写实现用 len(key)==1 判单键，多字节 rune 会被静默丢弃。
+func TestPromptAcceptsNonASCII(t *testing.T) {
+	m := Model{}
+	m.prompt = newPromptBox("路径", "输入", "", false, nil)
+
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("张三")})
+	if got := m.prompt.Input.Value(); got != "张三" {
+		t.Fatalf("中文未输入: %q", got)
+	}
+
+	// 一次退格只删一个字符，不能按字节截断成非法 UTF-8。
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if got := m.prompt.Input.Value(); got != "张" {
+		t.Fatalf("退格后应为 %q，实际 %q", "张", got)
+	}
+	if !utf8.ValidString(m.prompt.Input.Value()) {
+		t.Fatalf("输入内容不是合法 UTF-8: %q", m.prompt.Input.Value())
 	}
 }
 

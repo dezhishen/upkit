@@ -7,6 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -85,11 +88,30 @@ type confirmBox struct {
 }
 
 // promptBox 是文本输入弹窗。
+//
+// 输入由 bubbles/textinput 处理，不再自己拼字符串：手写版本只接受单字节按键
+// （非 ASCII 输入与粘贴会被静默丢弃），退格又按字节截断，会留下非法 UTF-8。
 type promptBox struct {
 	Title string
 	Label string
-	Buf   string
+	Input textinput.Model
 	Apply func(*Model, string) tea.Cmd
+}
+
+// newPromptBox 构造输入弹窗。secret 为真时按密码模式回显，避免令牌直接铺在屏幕上。
+func newPromptBox(title, label, initial string, secret bool, apply func(*Model, string) tea.Cmd) *promptBox {
+	ti := textinput.New()
+	ti.Prompt = "> "
+	ti.Placeholder = label
+	ti.CharLimit = 4096
+	if secret {
+		ti.EchoMode = textinput.EchoPassword
+	} else {
+		ti.SetValue(initial)
+	}
+	ti.CursorEnd()
+	ti.Focus()
+	return &promptBox{Title: title, Label: label, Input: ti, Apply: apply}
 }
 
 // Model 是 bubbletea 模型。
@@ -143,14 +165,16 @@ type Model struct {
 	installCh   chan installProgress
 
 	busy    bool
-	spinner int
+	spin    spinner.Model
 	status  string
 	statusT time.Time
 	fatal   error
 
-	confirm *confirmBox
-	prompt  *promptBox
-	help    bool
+	confirm  *confirmBox
+	prompt   *promptBox
+	help     bool
+	keys     keyMap
+	helpView help.Model
 }
 
 // New 构造模型。
@@ -169,6 +193,9 @@ func New(opts Options) Model {
 		logFollow: true,
 		status:    "按 ? 查看快捷键，c 检查更新",
 		installCh: make(chan installProgress, 64),
+		spin:      newSpinner(opts.ASCII),
+		keys:      newKeyMap(),
+		helpView:  newHelpModel(),
 	}
 	if m.log != nil {
 		for _, r := range m.log.Ring().Snapshot() {
@@ -201,11 +228,29 @@ type noticeMsg struct {
 
 type statusExpiredMsg struct{}
 
+// statusTTL 是状态提示在底栏停留的时长。
+const statusTTL = 6 * time.Second
+
+// newSpinner 造一个转圈指示器；ASCII 主题下换成线条帧。
+func newSpinner(ascii bool) spinner.Model {
+	if ascii {
+		return spinner.New(spinner.WithSpinner(spinner.Line))
+	}
+	return spinner.New(spinner.WithSpinner(spinner.Dot))
+}
+
+// newHelpModel 造帮助渲染器；ShowAll 让 ? 面板展开全部分组。
+func newHelpModel() help.Model {
+	h := help.New()
+	h.ShowAll = true
+	return h
+}
+
 // ── 生命周期 ──────────────────────────────────────────────────
 
 // Init 启动时先做一次全量检查。
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.sink.waitEvent(), m.checkCmd(nil))
+	return tea.Batch(m.sink.waitEvent(), m.checkCmd(nil), m.spin.Tick)
 }
 
 // Update 处理消息。
@@ -221,7 +266,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.sink.waitEvent()
 
 	case feedLoadedMsg:
-		if msg.url != m.feedFor {
+		// feedFor 为空 = 用户已经离开订阅详情页。此时若还拿空地址去重拉，
+		// Fetch("") 必然报「订阅地址无效」，而返回的 url 也是空串、
+		// 恰好等于 feedFor，守卫会失效，于是在界面上留下一条与操作无关的错误。
+		if m.feedFor == "" || msg.url != m.feedFor {
 			return m, nil // 已经切走，丢弃
 		}
 		m.feedLoaded = true
@@ -270,6 +318,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cancel()
 		}
 		m.setStatus(fmt.Sprintf("已安装 %s v%s", name, msg.entry.Plugin.Version))
+		if m.feedFor == "" {
+			// 安装期间离开了详情页，不需要（也无法）刷新。
+			return m, nil
+		}
 		m.feedLoaded = false
 		return m, m.loadFeedCmd(m.feedFor)
 
@@ -328,11 +380,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setStatus(msg.text)
 		return m, m.checkCmd(nil)
 
-	case statusExpiredMsg:
-		if time.Since(m.statusT) > 6*time.Second {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		// 搭车做过期清理：状态提示不应该永远停在底栏。
+		// 以前只有一个永不触发的 statusExpiredMsg，那句状态文字实际上从不消失。
+		if m.status != "" && time.Since(m.statusT) > statusTTL {
 			m.status, m.fatal = "", nil
 		}
-		return m, nil
+		return m, cmd
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -569,7 +625,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// 弹窗优先
 	if m.prompt != nil {
-		return m.handlePromptKey(key)
+		return m.handlePromptKey(msg)
 	}
 	if m.confirm != nil {
 		switch key {
@@ -717,12 +773,8 @@ func (m Model) updateOverview(key string) (tea.Model, tea.Cmd) {
 		return m, m.exportCmd()
 	case "I":
 		path := m.set.ManifestPath()
-		m.prompt = &promptBox{
-			Title: "导入清单",
-			Label: "文件路径",
-			Buf:   path,
-			Apply: func(mm *Model, v string) tea.Cmd { mm.busy = true; return mm.importCmd(v) },
-		}
+		m.prompt = newPromptBox("导入清单", "文件路径", path, false,
+			func(mm *Model, v string) tea.Cmd { mm.busy = true; return mm.importCmd(v) })
 	}
 	return m, nil
 }
@@ -810,8 +862,8 @@ func (m Model) updateLogs(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.setStatus("日志级别过滤：" + m.logLevel)
 		return m, nil
 	case "F":
-		m.prompt = &promptBox{Title: "日志关键字", Label: "关键字（留空取消）", Buf: m.logFilter,
-			Apply: func(mm *Model, v string) tea.Cmd { mm.logFilter = v; mm.refreshLogView(); return nil }}
+		m.prompt = newPromptBox("日志关键字", "关键字（留空取消）", m.logFilter, false,
+			func(mm *Model, v string) tea.Cmd { mm.logFilter = v; mm.refreshLogView(); return nil })
 		return m, nil
 	case "g":
 		m.logFollow = false
@@ -827,32 +879,27 @@ func (m Model) updateLogs(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) handlePromptKey(key string) (tea.Model, tea.Cmd) {
+// handlePromptKey 把按键交给 textinput 处理，只拦下确认与取消。
+func (m Model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	p := m.prompt
-	switch key {
-	case "esc":
+	switch msg.Type {
+	case tea.KeyEsc:
 		m.prompt = nil
 		m.setStatus("已取消")
 		return m, nil
-	case "enter":
+	case tea.KeyEnter:
 		action := p.Apply
-		value := p.Buf
+		value := p.Input.Value()
 		m.prompt = nil
 		var cmd tea.Cmd
 		if action != nil {
 			cmd = action(&m, value)
 		}
 		return m, cmd
-	case "backspace":
-		if len(p.Buf) > 0 {
-			p.Buf = p.Buf[:len(p.Buf)-1]
-		}
-		return m, nil
 	}
-	if len(key) == 1 && key >= " " {
-		p.Buf += key
-	}
-	return m, nil
+	var cmd tea.Cmd
+	p.Input, cmd = p.Input.Update(msg)
+	return m, cmd
 }
 
 // ── 工具 ──────────────────────────────────────────────────────
@@ -918,11 +965,7 @@ func (m Model) pendingIDs() []string {
 }
 
 func (m Model) spinnerText() string {
-	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	if m.theme.ASCII {
-		frames = []string{"|", "/", "-", "\\"}
-	}
-	return frames[m.spinner%len(frames)]
+	return m.spin.View()
 }
 
 // enabled 返回条目的启用状态。

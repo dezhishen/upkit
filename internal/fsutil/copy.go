@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/dezhishen/upkit/internal/util"
 )
@@ -156,6 +157,20 @@ func CopyDir(src, dst string, skip SkipFunc) error {
 			}
 			return nil
 		}
+		// WalkDir 不跟随符号链接，目录型链接会走到这里被当成文件：
+		// CopyFile 里 os.Stat 跟随链接后判定为目录并报错，一个链接就让整次
+		// 备份失败 —— 而备份失败等于更新中止。悬空链接同理。
+		if d.Type()&os.ModeSymlink != 0 {
+			if st, err := os.Stat(path); err != nil {
+				// 悬空链接：跳过而不是中断，它不是本次更新关心的内容。
+				return nil
+			} else if st.IsDir() {
+				if err := os.MkdirAll(target, 0o755); err != nil {
+					return fmt.Errorf("创建目录 %s: %w", target, err)
+				}
+				return nil
+			}
+		}
 		if _, err := CopyFile(path, target); err != nil {
 			return err
 		}
@@ -188,19 +203,38 @@ func RemoveContents(dir string, keep []string) error {
 	return errors.Join(errs...)
 }
 
+// removeAttempts/removeBackoff 控制删除的重试节奏。
+//
+// Windows 上删除失败大多是瞬时占用：杀毒扫描、搜索索引器、资源管理器缩略图
+// 都会短时间持有文件句柄。直接上报会把「本可避免的失败」变成一次回滚，
+// 而回滚走的是同一个实现，可能再次失败退化成回滚失败。
+const (
+	removeAttempts = 3
+	removeBackoff  = 150 * time.Millisecond
+)
+
 // RemoveAll 删除文件或目录，目标不存在时视为成功。
 //
-// 与 os.RemoveAll 的区别：当删除失败（例如 Windows 上文件被占用）时，
-// 会返回带路径的可读错误，而不是静默成功。
+// 与 os.RemoveAll 的区别：遇失败会退避重试并清掉只读位
+// （os.Chmod 在 Windows 上会清除 FILE_ATTRIBUTE_READONLY），
+// 仍失败则返回带路径的可读错误，而不是静默成功。
 func RemoveAll(path string) error {
 	if path == "" {
 		return nil
 	}
-	err := os.RemoveAll(path)
-	if err != nil {
-		return fmt.Errorf("删除 %s: %w", path, err)
+	var err error
+	for attempt := 0; attempt < removeAttempts; attempt++ {
+		if err = os.RemoveAll(path); err == nil {
+			return nil
+		}
+		// 已经不存在（比如别的重试删掉了）就不要当成失败。
+		if _, statErr := os.Lstat(path); statErr != nil {
+			return nil
+		}
+		_ = os.Chmod(path, 0o666)
+		time.Sleep(time.Duration(attempt+1) * removeBackoff)
 	}
-	return nil
+	return fmt.Errorf("删除 %s: %w", path, err)
 }
 
 // Move 优先使用 rename 移动路径；跨卷失败时回退为复制后删除。

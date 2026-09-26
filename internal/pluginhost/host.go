@@ -171,8 +171,44 @@ func (m *Manager) Load(ctx context.Context) {
 	}
 }
 
+// stopClient 停掉当前连接并清空状态（幂等，可重复调用）。
+func (m *Manager) stopClient(it *item) {
+	m.mu.Lock()
+	c := it.client
+	it.client, it.apps, it.info = nil, nil, upkitplugin.Info{}
+	m.mu.Unlock()
+	if c != nil {
+		c.Kill()
+	}
+}
+
+// listContext 给 List 调用加一个独立超时。
+//
+// 不能只用调用方传进来的 ctx：启动路径上 main 传的是 context.Background()，
+// 而一个「能完成握手、但 List 永不返回」的插件会让 upkit 卡在 TUI 起来之前，
+// 此时连信号处理都还没装上，用户只能强杀。
+func (m *Manager) listContext(ctx context.Context, timeout time.Duration) context.Context {
+	if timeout <= 0 {
+		timeout = defaultCallTimeout
+	}
+	c, cancel := context.WithTimeout(ctx, timeout)
+	// 调用结束即释放；超时的 goroutine 会随连接关闭收尾。
+	go func() {
+		<-c.Done()
+		cancel()
+	}()
+	return c
+}
+
+// start 建立与插件的连接并拉取软件列表。
 func (m *Manager) start(ctx context.Context, it *item) {
 	id := it.entry.ID
+
+	// 先停掉可能还在跑的旧连接。start 会被反复调用（安装、重载、改配置），
+	// 旧实现直接覆盖 it.client，于是每重载一次就多一个活的插件进程，
+	// 而且下面每一条提前 return（停用 / 文件缺失 / 未信任）都会留下它 ——
+	// 界面上写着「已停用」，进程却还在跑。
+	m.stopClient(it)
 
 	if !it.entry.EnabledValue() || !it.man.EnabledValue() {
 		m.setState(it, StateDisabled, "已在配置中停用")
@@ -214,11 +250,24 @@ func (m *Manager) start(ctx context.Context, it *item) {
 		return
 	}
 
-	list, err := client.Source().List(ctx)
+	list, err := client.Source().List(m.listContext(ctx, timeout))
 	if err != nil {
 		client.Kill()
 		m.setState(it, StateError, fmt.Sprintf("读取插件软件列表失败: %v", err))
 		return
+	}
+
+	// 建立连接后创建插件私有目录：SDK 文档承诺 DataDir/LogDir 存在且可写，
+	// 但以前只做了路径拼接，插件照文档写就会拿到 ENOENT。
+	for _, dir := range []string{
+		filepath.Join(m.cfg.DataRoot, dirPlugins, id),
+		filepath.Join(m.cfg.LogRoot, dirPlugins, id),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			client.Kill()
+			m.setState(it, StateError, fmt.Sprintf("创建插件目录 %s 失败: %v", dir, err))
+			return
+		}
 	}
 
 	m.mu.Lock()

@@ -166,7 +166,7 @@ changelog 的起点始终是**最近一个正式版**：预览版据此列出自
 
 ```bash
 make next-version BUMP=minor STAGE=rc    # 看看下一个版本号是多少
-bash scripts/build.sh --version v1.2.3   # 本地构建（含体积门禁）
+bash scripts/build.sh --version v1.2.3   # 本地构建
 bash scripts/build-plugin.sh --release-name -v 1.2.3 -t windows/amd64 ./cmd/upkit-hub
 bash scripts/gen-feed.sh --plugins-dir dist/plugins --version 1.2.3 \
   --base-url https://example.com/dl -o dist/feed.yaml

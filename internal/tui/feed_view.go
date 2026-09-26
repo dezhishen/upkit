@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 
 	"github.com/dezhishen/upkit/internal/pluginfeed"
 	"github.com/dezhishen/upkit/internal/pluginhost"
+	"github.com/dezhishen/upkit/internal/settings"
 )
 
 // 订阅详情的异步消息。
@@ -40,7 +42,30 @@ type installProgress struct{ done, total int64 }
 // feedClient 是订阅拉取与插件下载共用的 HTTP 客户端。
 //
 // 下载可能几十 MB，所以超时给得很宽松；订阅拉取单独用短超时（见 loadFeedCmd）。
-func feedClient() *http.Client { return &http.Client{Timeout: 30 * time.Minute} }
+// 代理走用户配置：只认环境变量会让「软件更新正常、订阅全部失败」变得难以排查。
+func (m Model) feedClient() *http.Client {
+	c := &http.Client{Timeout: 30 * time.Minute}
+	if proxy := proxyFromSettings(m.set); proxy != "" {
+		tr, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			return c
+		}
+		clone := tr.Clone()
+		if u, err := url.Parse(proxy); err == nil {
+			clone.Proxy = http.ProxyURL(u)
+			c.Transport = clone
+		}
+	}
+	return c
+}
+
+// proxyFromSettings 取出用户配置的代理地址。
+func proxyFromSettings(s *settings.Settings) string {
+	if s == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.Network.Proxy)
+}
 
 // hostVersionForFeed 返回用于校验 min_host_version 的宿主版本。
 //
@@ -61,7 +86,7 @@ func (m Model) loadFeedCmd(rawURL string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
-		feed, err := pluginfeed.Fetch(ctx, feedClient(), rawURL)
+		feed, err := pluginfeed.Fetch(ctx, m.feedClient(), rawURL)
 		if err != nil {
 			return feedLoadedMsg{url: rawURL, err: err}
 		}
@@ -100,7 +125,7 @@ func (m Model) installEntryCmd(rawURL string, e pluginfeed.Entry) tea.Cmd {
 		if ch != nil {
 			defer func() { ch <- installProgress{done: progressDone} }()
 		}
-		res, err := pluginfeed.Install(context.Background(), feedClient(), pluginfeed.InstallRequest{
+		res, err := pluginfeed.Install(context.Background(), m.feedClient(), pluginfeed.InstallRequest{
 			FeedURL:   rawURL,
 			Entry:     e,
 			PluginDir: pluginDir,

@@ -281,19 +281,22 @@ func Load(path string) (*Settings, error) {
 		return nil, fmt.Errorf("读取设置 %s: %w", path, err)
 	}
 
-	// 先解码到用户值，再与默认值合并，保证新增字段自动获得默认值。
-	user := &Settings{}
+	// 直接解码到默认值上：文件里没出现的字段保持默认，出现的字段（包括显式的
+	// false）按文件覆盖。这是解码器的天然语义。
+	//
+	// 先前的做法是「解码到空结构体 + merge 默认值」，而 merge 只能靠零值判断
+	// 用户是否写过该字段 —— 对默认 true 的布尔项来说，false 既是用户意图又是
+	// 零值，于是被默认值覆盖回去：执行前确认、日志脱敏这些开关永远关不掉。
 	dec := yaml.NewDecoder(strings.NewReader(string(data)))
 	dec.KnownFields(true)
-	if err := dec.Decode(user); err != nil && err != io.EOF {
+	if err := dec.Decode(s); err != nil && err != io.EOF {
 		return nil, fmt.Errorf("解析设置 %s: %w", path, err)
 	}
-	merged := merge(Default(), user)
-	merged.Path = path
-	if err := merged.Normalize(); err != nil {
+	s.Path = path
+	if err := s.Normalize(); err != nil {
 		return nil, err
 	}
-	return merged, nil
+	return s, nil
 }
 
 // Normalize 补全派生路径并做基础校验。
@@ -523,96 +526,6 @@ func MaskSecret(v string) string {
 		return v
 	}
 	return "***"
-}
-
-// merge 把用户值覆盖到默认值上（零值字段保留默认）。
-func merge(def, user *Settings) *Settings {
-	out := *def
-	if user.Network.Proxy != "" {
-		out.Network.Proxy = user.Network.Proxy
-	}
-	if user.Network.TimeoutSeconds != 0 {
-		out.Network.TimeoutSeconds = user.Network.TimeoutSeconds
-	}
-	if user.Network.Retries != 0 {
-		out.Network.Retries = user.Network.Retries
-	}
-	if user.Network.RateLimitKBps != 0 {
-		out.Network.RateLimitKBps = user.Network.RateLimitKBps
-	}
-	if user.Network.GitHubToken != "" {
-		out.Network.GitHubToken = user.Network.GitHubToken
-	}
-	if user.Storage.DataDir != "" {
-		out.Storage.DataDir = user.Storage.DataDir
-	}
-	if user.Storage.CacheDir != "" {
-		out.Storage.CacheDir = user.Storage.CacheDir
-	}
-	if user.Storage.TempDir != "" {
-		out.Storage.TempDir = user.Storage.TempDir
-	}
-	if user.Storage.BackupKeep != 0 {
-		out.Storage.BackupKeep = user.Storage.BackupKeep
-	}
-	if user.Storage.CacheKeep != 0 {
-		out.Storage.CacheKeep = user.Storage.CacheKeep
-	}
-	if user.Storage.MinFreeSpaceMB != 0 {
-		out.Storage.MinFreeSpaceMB = user.Storage.MinFreeSpaceMB
-	}
-	if user.Storage.BudgetMB != 0 {
-		out.Storage.BudgetMB = user.Storage.BudgetMB
-	}
-	if user.Plugins.Dir != "" {
-		out.Plugins.Dir = user.Plugins.Dir
-	}
-	if user.Plugins.RequireSignature {
-		out.Plugins.RequireSignature = true
-	}
-	if len(user.Plugins.Allowlist) > 0 {
-		out.Plugins.Allowlist = user.Plugins.Allowlist
-	}
-	if user.Engine.DownloadConcurrency != 0 {
-		out.Engine.DownloadConcurrency = user.Engine.DownloadConcurrency
-	}
-	if user.Engine.ApplyConcurrency != 0 {
-		out.Engine.ApplyConcurrency = user.Engine.ApplyConcurrency
-	}
-	if user.Behavior.StopStrategy != "" {
-		out.Behavior.StopStrategy = user.Behavior.StopStrategy
-	}
-	if user.Behavior.LaunchAfterUpdate {
-		out.Behavior.LaunchAfterUpdate = true
-	}
-	if user.Logs.Level != "" {
-		out.Logs.Level = user.Logs.Level
-	}
-	if user.Logs.Dir != "" {
-		out.Logs.Dir = user.Logs.Dir
-	}
-	if user.Logs.MaxSizeMB != 0 {
-		out.Logs.MaxSizeMB = user.Logs.MaxSizeMB
-	}
-	if user.Logs.MaxFiles != 0 {
-		out.Logs.MaxFiles = user.Logs.MaxFiles
-	}
-	if user.Logs.MaxAgeDays != 0 {
-		out.Logs.MaxAgeDays = user.Logs.MaxAgeDays
-	}
-	if user.Logs.MaxTotalMB != 0 {
-		out.Logs.MaxTotalMB = user.Logs.MaxTotalMB
-	}
-	if user.UI.Theme != "" {
-		out.UI.Theme = user.UI.Theme
-	}
-	if user.UI.Borders != "" {
-		out.UI.Borders = user.UI.Borders
-	}
-	if user.UI.RefreshMS != 0 {
-		out.UI.RefreshMS = user.UI.RefreshMS
-	}
-	return &out
 }
 
 func pickDir(v, def string) string {

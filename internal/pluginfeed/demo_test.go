@@ -83,7 +83,7 @@ func TestDemoFeedFixtureDigestsAreReal(t *testing.T) {
 // 完整链路：相对路径解析 → 平台选择 → 下载 → 摘要校验 → 落盘 + sidecar。
 func TestDemoFeedInstallEndToEnd(t *testing.T) {
 	mux := http.NewServeMux()
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewTLSServer(mux)
 	defer srv.Close()
 
 	mux.HandleFunc("/demo-feed.yaml", func(w http.ResponseWriter, _ *http.Request) {

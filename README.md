@@ -133,7 +133,6 @@ temp/      更新过程中的临时文件（自动清理）
 | [docs/plugin-subscription.md](docs/plugin-subscription.md) | 来源文件格式 |
 | [docs/architecture.md](docs/architecture.md) | 程序内部结构 |
 | [docs/release.md](docs/release.md) | 发布流程 |
-| [configs/apps.example.yaml](configs/apps.example.yaml) | 软件清单格式 |
 
 ## License
 

@@ -118,7 +118,7 @@ func (m Model) viewOverview(w, height int) string {
 		return m.theme.Panel("概览", m.spinnerText()+" 正在检查上游版本…", w, height, true)
 	}
 	if len(m.apps) == 0 {
-		return m.theme.Panel("概览", "清单里还没有软件。\n\n编辑 apps.yaml 后按 C 重新检查，或按 I 导入先前导出的清单。",
+		return m.theme.Panel("概览", "还没有任何软件。\n\n按 6 到「来源」面板，再按 o 添加官方源，\n软件会随源一起出现。",
 			w, height, true)
 	}
 
@@ -357,35 +357,17 @@ func (m Model) viewConfirm() string {
 
 func (m Model) viewPrompt() string {
 	p := m.prompt
-	body := p.Label + "\n\n> " + p.Buf + "▏\n\n" + m.theme.Dim().Render("Enter 确认，Esc 取消（退格键删除）")
+	body := p.Label + "\n\n" + p.Input.View() + "\n\n" + m.theme.Dim().Render("Enter 确认，Esc 取消")
 	w := minInt(m.width-4, 72)
 	return m.theme.Panel(p.Title, body, w, countLines(body)+4, true)
 }
 
 func (m Model) viewHelp() string {
-	rows := [][2]string{
-		{"1..5 / Tab", "切换面板"},
-		{"j k / ↑ ↓", "移动光标"},
-		{"c / C", "检查选中 / 检查全部"},
-		{"u / U", "更新选中 / 更新全部可更新"},
-		{"p / Enter", "生成执行计划"},
-		{"空格", "启用 / 停用该软件"},
-		{"x", "卸载（保留用户数据）"},
-		{"r", "回滚到最近备份"},
-		{"d", "清除已完成任务"},
-		{"f / F", "日志级别 / 关键字"},
-		{"E / I", "导出清单 / 导入清单"},
-		{"s", "保存设置"},
-		{"R", "设置恢复默认"},
-		{"? / q", "关闭本页 / 退出"},
-	}
 	var b strings.Builder
-	for _, r := range rows {
-		fmt.Fprintf(&b, "%s %s\n", m.theme.Primary().Render(fmt.Sprintf("%-12s", r[0])), r[1])
-	}
-	b.WriteString("\n")
+	b.WriteString(m.helpView.View(m.keys))
+	b.WriteString("\n\n")
 	b.WriteString(m.theme.Dim().Render("按任意键返回"))
-	return m.theme.Panel("快捷键", b.String(), minInt(m.width-4, 64), countLines(b.String())+4, true)
+	return m.theme.Panel("快捷键", b.String(), minInt(m.width-4, 72), countLines(b.String())+4, true)
 }
 
 func (m Model) viewFooter(width int) string {
@@ -395,10 +377,7 @@ func (m Model) viewFooter(width int) string {
 	} else if m.busy {
 		left = m.spinnerText() + " " + left
 	}
-	hint := "? 帮助  q 退出"
-	if m.tab == tabOverview {
-		hint = "c 检查  u 更新  U 全部  p 计划  x 卸载  r 回滚  ? 帮助  q 退出"
-	}
+	hint := m.helpView.ShortHelpView(m.keys.ShortHelp())
 	pad := width - lipgloss.Width(left) - lipgloss.Width(hint)
 	if pad < 1 {
 		pad = 1

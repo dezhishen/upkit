@@ -38,4 +38,10 @@ const (
 
 	// cancelTimeout 是通知插件停止当前任务时的宽限时间。
 	cancelTimeout = 2 * time.Second
+
+	// defaultCallTimeout 是未在清单里配置超时时的单次调用上限。
+	//
+	// 启动路径上调用方往往没有 deadline（main 传 context.Background()），
+	// 一个「能握手但永不返回」的插件会让宿主卡在启动阶段且无法自救。
+	defaultCallTimeout = 20 * time.Second
 )

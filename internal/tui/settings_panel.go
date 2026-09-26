@@ -61,12 +61,12 @@ func (m Model) fields() []settingField {
 	return []settingField{
 		{Label: "网络代理", Kind: kindText, Value: func() string { return orDash(s.Network.Proxy) },
 			Text: func() *promptBox {
-				return &promptBox{Title: "网络代理", Label: "http:// 或 socks5://（留空表示不使用）", Buf: s.Network.Proxy,
-					Apply: func(mm *Model, v string) tea.Cmd {
+				return newPromptBox("网络代理", "http:// 或 socks5://（留空表示不使用）", s.Network.Proxy, false,
+					func(mm *Model, v string) tea.Cmd {
 						mm.set.Network.Proxy = strings.TrimSpace(v)
 						mm.setDirty = true
 						return nil
-					}}
+					})
 			}},
 		{Label: "请求超时（秒）", Kind: kindInt, Value: func() string { return fmt.Sprint(s.Network.TimeoutSeconds) },
 			Delta: func(d int) {
@@ -82,12 +82,13 @@ func (m Model) fields() []settingField {
 			}},
 		{Label: "GitHub 令牌", Kind: kindText, Value: func() string { return maskSecret(s.Network.GitHubToken) },
 			Text: func() *promptBox {
-				return &promptBox{Title: "GitHub 令牌", Label: "留空表示不使用；也可写 env:VAR 引用环境变量", Buf: s.Network.GitHubToken,
-					Apply: func(mm *Model, v string) tea.Cmd {
+				// 令牌不回显：secret 模式下输入框不填入原值，避免令牌直接铺在屏幕上（录屏/肩窥/终端回滚缓冲）。
+				return newPromptBox("GitHub 令牌", "留空表示不使用；也可写 env:VAR 引用环境变量", s.Network.GitHubToken, true,
+					func(mm *Model, v string) tea.Cmd {
 						mm.set.Network.GitHubToken = strings.TrimSpace(v)
 						mm.setDirty = true
 						return nil
-					}}
+					})
 			}},
 		{Label: "下载并发", Kind: kindInt, Value: func() string { return fmt.Sprint(s.Engine.DownloadConcurrency) },
 			Delta: func(d int) {
@@ -151,12 +152,12 @@ func (m Model) fields() []settingField {
 			Cycle: func(int) { s.Plugins.RequireSignature = !s.Plugins.RequireSignature; m.setDirty = true }},
 		{Label: "插件域名白名单", Kind: kindText, Value: func() string { return orDash(strings.Join(s.Plugins.Allowlist, ", ")) },
 			Text: func() *promptBox {
-				return &promptBox{Title: "插件域名白名单", Label: "逗号分隔；留空表示不限制（跨域下载仍需逐次授权）", Buf: strings.Join(s.Plugins.Allowlist, ", "),
-					Apply: func(mm *Model, v string) tea.Cmd {
+				return newPromptBox("插件域名白名单", "逗号分隔；留空表示不限制（跨域下载仍需逐次授权）", strings.Join(s.Plugins.Allowlist, ", "), false,
+					func(mm *Model, v string) tea.Cmd {
 						mm.set.Plugins.Allowlist = splitList(v)
 						mm.setDirty = true
 						return nil
-					}}
+					})
 			}},
 		{Label: "界面主题", Kind: kindEnum, Opts: []string{"auto", "dark", "light"},
 			Value: func() string { return s.UI.Theme },
@@ -183,7 +184,7 @@ func (m Model) paths() [][2]string {
 	return [][2]string{
 		{"根目录", root},
 		{"设置文件", cfg},
-		{"软件清单", s.AppsPath()},
+		{"来源与配置", s.AppsPath()},
 		{"清单导出", s.ManifestPath()},
 		{"日志目录", s.Logs.Dir},
 		{"插件目录", s.Plugins.Dir},

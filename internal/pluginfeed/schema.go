@@ -2,6 +2,7 @@ package pluginfeed
 
 import (
 	"fmt"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -169,12 +170,22 @@ func (f *Feed) Validate(hostVersion, hostPlatform string) error {
 	return nil
 }
 
+// pluginVersionRe 限制版本号的字符集。
+//
+// 版本号会被拼进缓存文件名（见 install.go 的 cacheName），放任任意字符就等于
+// 把 filepath.Join 的越界能力交给订阅方：version: "../../x" 能写到任意路径。
+var pluginVersionRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
+
 func (p Plugin) validate(hostVersion, hostPlatform string) error {
 	if strings.TrimSpace(p.ID) == "" {
 		return fmt.Errorf("缺少 id")
 	}
 	if !ValidID(p.ID) {
 		return fmt.Errorf("id %q 不合法（要求 ^[a-z0-9][a-z0-9._-]{0,63}$，且不得为 Windows 保留名）", p.ID)
+	}
+	// version 可以为空（表示未声明），但一旦写了就必须是安全字符。
+	if v := strings.TrimSpace(p.Version); v != "" && !pluginVersionRe.MatchString(v) {
+		return fmt.Errorf("version %q 不合法（只允许字母、数字与 . _ + -，且不以符号开头）", p.Version)
 	}
 	if p.Packages.Len() == 0 {
 		return fmt.Errorf("插件 %s 没有任何平台的包", p.ID)

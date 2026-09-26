@@ -203,6 +203,8 @@ func extractTarGz(ctx context.Context, archivePath, destDir string) (core.Unpack
 	}
 
 	var res core.UnpackResult
+	var written int64
+	entries := 0
 	tr := tar.NewReader(gz)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -214,6 +216,12 @@ func extractTarGz(ctx context.Context, archivePath, destDir string) (core.Unpack
 		}
 		if err != nil {
 			return res, fmt.Errorf("读取 tar: %w", err)
+		}
+		// 与 zip 分支一致：条目数与写出体积都要封顶，
+		// 否则一个小体积高压缩比的包能把磁盘写满。
+		entries++
+		if entries > archive.MaxZipEntries {
+			return res, fmt.Errorf("压缩包条目数 %d 超过上限 %d", entries, archive.MaxZipEntries)
 		}
 		if hdr.Typeflag == tar.TypeSymlink || hdr.Typeflag == tar.TypeLink {
 			continue
@@ -235,13 +243,18 @@ func extractTarGz(ctx context.Context, archivePath, destDir string) (core.Unpack
 			if err != nil {
 				return res, err
 			}
-			n, copyErr := io.Copy(out, tr)
+			n, copyErr := io.Copy(out, io.LimitReader(tr, archive.MaxExtractedBytes-written+1))
 			closeErr := out.Close()
 			if copyErr != nil {
 				return res, fmt.Errorf("解压 %s: %w", hdr.Name, copyErr)
 			}
 			if closeErr != nil {
 				return res, closeErr
+			}
+			written += n
+			if written > archive.MaxExtractedBytes {
+				_ = os.Remove(target)
+				return res, fmt.Errorf("解压 %s: 解压后总体积超过上限 %d 字节（疑似压缩炸弹）", hdr.Name, archive.MaxExtractedBytes)
 			}
 			res.Files++
 			res.Bytes += n
