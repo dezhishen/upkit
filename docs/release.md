@@ -55,13 +55,37 @@ verify（gofmt / vet / test）
 
 `verify` 会在发布前再跑一遍测试：CI 虽然在 `main` 上过了，但 tag 有可能打在别处。
 
+### 发布门禁：为什么 tag 打了也可能不发版
+
+`verify` 除了重跑 gofmt / vet / test，还会用 GitHub API 确认**这个提交本身跑过
+并通过了 `ci.yml`**。两者不是重复劳动：重跑能盖住的只有格式与单元测试，而覆盖率
+门禁、交叉编译、发布演练都在 `ci.yml` 里 —— “重跑看起来也绿”不等于“这个提交被
+验证过”。
+
+各种情况的判定：
+
+| 该提交的 CI 状态 | 结果 |
+| --- | --- |
+| `completed success` | 继续发版 |
+| `completed failure` / `cancelled` / `skipped` | **拒绝**，tag 已经打了，但 release 不发 |
+| 仍在 `in_progress` / `queued` | **拒绝**，提示等 CI 结束 |
+| 找不到记录 | **拒绝**，提示先推到分支、等 CI 过、再在该提交上打 tag |
+
+只认 `push` 与手动重跑触发的运行：同一个提交也可能被 PR 触发过 CI，那次失败
+不代表分支上的状态有问题。
+
+**为什么不在打 tag 那一刻拦住**：GitHub 的 tag 不能用 Rulesets 要求 status
+check（那个能力只对分支生效），GitHub 也不提供服务端 pre-receive hook
+（那是 GitLab / 自建才有的）。所以只能在流水线里拦 —— tag 会创建，但 release
+不会发出去，需要先修好再重新打一个 tag。
+
 ### main 上的发布演练
 
 推送到 `main`（以及开 PR）时，`ci.yml` 会自动跑一次**不推 release 的构建**：
 
 ```
-test（gofmt / vet / test -race + 覆盖率）
-  ├─ build（两个架构的交叉编译快检，matrix 并行）
+test（gofmt / vet / test -race + 覆盖率 + 13 个包的分级门禁）
+  ├─ build（两个架构的 exe，产物传 artifact 供下载）
   └─ smoke（发布演练：真构建全部产物 + 生成 feed.yaml，产物传 artifact）
 ```
 

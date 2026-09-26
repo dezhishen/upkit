@@ -31,6 +31,8 @@ on:
 
 permissions:
   contents: write
+  # verify 需要读 CI 的运行结果，才能确认「这个提交被验证过」。
+  actions: read
 
 concurrency:
   group: release
@@ -60,6 +62,51 @@ jobs:
           if [ -n "$unformatted" ]; then
             echo "以下文件未格式化："; echo "$unformatted"; exit 1
           fi
+
+      - name: 确认该提交已通过 CI
+        # 发布要基于「被验证过的那个提交」，而不是「重新跑一遍看起来也绿」：
+        # 重跑能盖住的只有 gofmt/vet/test，覆盖率门禁、交叉编译、发布演练
+        # 都在 ci.yml 里，重跑不等于 CI 通过。
+        #
+        # 为何不在打 tag 时就拦住：GitHub 的 tag 不能用 Rulesets 要求 status
+        # check（该能力只对分支生效），也没有服务端 pre-receive hook。
+        # 所以只能在流水线里拦 —— tag 已经打了，但 release 不会发出去。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "检查提交 $sha 的 CI 结果"
+
+          # 只认 push 与手动重跑触发的运行：同一个提交也可能被 PR 触发过 CI，
+          # 那次失败不代表分支上的状态有问题，取「最新一条」会误杀。
+          # 用字符串拼接而不是 "\(...)" 插值，省掉一层引号转义。
+          out="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=20" \
+            --jq '[.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch")] | .[0] | (.status + " " + (.conclusion // "none"))' \
+            2>/dev/null || true)"
+
+          echo "CI 最近一次运行：${out:-（无记录）}"
+          case "$out" in
+            "completed success")
+              echo "✓ 该提交已通过 CI"
+              ;;
+            "completed "*)
+              echo "✗ 该提交的 CI 结论是 ${out#completed }，不能作为发布依据" >&2
+              echo "  先修好再重新提交，或把 tag 指向一个 CI 绿的提交" >&2
+              exit 1
+              ;;
+            in_progress*|queued*|requested*|waiting*|pending*)
+              echo "✗ CI 还在跑，等它结束再发版" >&2
+              exit 1
+              ;;
+            *)
+              echo "✗ 找不到该提交的 CI 记录" >&2
+              echo "  发布必须基于跑过 ci.yml 的提交；若是手工打 tag，" >&2
+              echo "  请先推到分支、等 CI 过、再在该提交上打 tag" >&2
+              exit 1
+              ;;
+          esac
 
       - name: 文件头检查
         run: bash scripts/check-headers.sh
