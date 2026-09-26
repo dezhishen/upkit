@@ -6,6 +6,7 @@
 
 - [安装与首次启动](#安装与首次启动)
 - [界面说明](#界面说明)
+- [去掉窗口标题栏](#去掉窗口标题栏)
 - [添加与管理软件](#添加与管理软件)
 - [日常操作](#日常操作)
 - [软件来源](#软件来源)
@@ -49,6 +50,54 @@
 底部提示栏显示当前可用按键，按 `?` 查看完整快捷键。
 
 按 <kbd>1</kbd> 至 <kbd>6</kbd> 切换面板，或按 <kbd>Tab</kbd> 依次切换。
+
+### 命令行选项
+
+| 选项 | 作用 |
+| --- | --- |
+| `--config 路径` | 指定设置文件 |
+| `--log-level 级别` | `debug` / `info` / `warn` / `error`，覆盖设置文件 |
+| `--log-dir 路径` | 日志目录 |
+| `--no-color` | 禁用颜色输出 |
+| `--ascii` | 仅用 ASCII 字符绘制界面 |
+| `--focus` | 以无标题栏的焦点模式重新启动，见下一节 |
+| `--print-paths` | 打印目录布局与设置文件位置后退出 |
+| `--version` | 打印版本后退出 |
+
+---
+
+## 去掉窗口标题栏
+
+upkit 运行在终端里，窗口的标题栏与标签行由终端绘制，**程序自身无法隐藏它们**。
+不过 Windows Terminal 提供了「焦点模式」，进入后连标题栏与标签行一起隐藏，只剩界面内容。有两种用法：
+
+**每次启动都无标题栏**（推荐）：
+
+1. 在 Windows Terminal 中按 <kbd>Ctrl</kbd>+<kbd>,</kbd> 打开设置，
+   或直接编辑 `settings.json`。
+2. 在**根节点**（不在任何 `profiles` 条目里）加上：
+
+   ```json
+   "launchMode": "focus"
+   ```
+
+   数值也可用 `"maximizedFocus"`：最大化且无标题栏。
+3. 重启 Windows Terminal 生效。
+
+**只对某次启动生效**：从命令行启动时加 `--focus`：
+
+```cmd
+upkit.exe --focus
+```
+
+upkit 会请 Windows Terminal 以焦点模式另开一个窗口，然后退出当前进程。
+注意：
+
+- 只在 Windows Terminal 中有效。在传统控制台里运行会直接报错，
+  此时可先按 <kbd>Alt</kbd>+<kbd>Enter</kbd> 进入全屏。
+- 需要 `wt.exe` 可用（Windows Terminal 默认启用其应用执行别名）。
+- 会另开一个窗口，原窗口关闭，因此屏幕会闪一下。
+- 想临时退出焦点模式，用 Windows Terminal 的 `toggleFocusMode` 动作；如需随时切换，可在 `settings.json` 的 `actions` 里给它绑定一个快捷键。
 
 ---
 

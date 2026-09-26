@@ -51,6 +51,7 @@ func main() {
 		logDir     = flag.String("log-dir", "", "日志目录（覆盖设置文件）")
 		noColor    = flag.Bool("no-color", false, "禁用颜色输出")
 		asciiUI    = flag.Bool("ascii", false, "仅使用 ASCII 字符绘制界面")
+		focusMode  = flag.Bool("focus", false, "以无标题栏的焦点模式重新启动（仅 Windows Terminal）")
 		showVer    = flag.Bool("version", false, "打印版本并退出")
 		showPaths  = flag.Bool("print-paths", false, "打印目录布局与配置文件位置后退出")
 	)
@@ -70,6 +71,20 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
+
+	// 焦点模式要把控制权交给新进程，因此排在 --version/--print-paths 之后、
+	// 终端检查之前：重新拉起不需要当前进程拥有终端。
+	if *focusMode {
+		relaunched, err := ensureFocusMode()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "upkit:", err)
+			os.Exit(2)
+		}
+		if relaunched {
+			return
+		}
+	}
+
 	// TUI 需要真实终端；重定向或管道时立即报错，不挂起等待输入。
 	if !isTerminal() {
 		fmt.Fprintln(os.Stderr, "upkit 是全屏终端程序，请在交互式终端中运行。")
@@ -416,8 +431,8 @@ func printUsage() {
 	flag.PrintDefaults()
 	fmt.Fprint(out, `
 界面快捷键（按 ? 查看全部）：
-  1..5/Tab  切换面板        c / C  检查选中 / 检查全部
-  u..U      更新选中 / 全部  p      生成执行计划
+  1..6/Tab  切换面板        c / C  检查选中 / 检查全部
+  u / U     更新选中 / 全部  p      生成执行计划
   x         卸载            r      回滚到最近备份
   E / I     导出 / 导入清单  q      退出
 
