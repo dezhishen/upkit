@@ -1,0 +1,97 @@
+# upkit 应用设置示例
+#
+# 在 upkit 的「设置」面板里改（按 5），改完按 s 保存。
+# 这里列出全部可选项，方便对照。
+#
+# 手动修改：复制到 <upkit 所在目录>/config/settings.yaml。
+#
+# 目录布局（默认便携模式，全部在 upkit 同级目录下）：
+#   <upkit 所在目录>/config/settings.yaml    设置（本文件）
+#   <upkit 所在目录>/config/apps.yaml        软件清单
+#   <upkit 所在目录>/config/upkit-manifest.json  清单导出
+#   <upkit 所在目录>/log/                    运行日志与审计日志
+#   <upkit 所在目录>/plugin/                 插件（子系统尚未实现，目录预留）
+#   <upkit 所在目录>/data/ cache/ backup/ temp/
+#
+# 根目录优先级：环境变量 UPKIT_HOME > upkit 所在目录（可写时）> 用户配置目录
+# （回退布局为 %APPDATA%\upkit）。
+# 也可以用 --config 指向别处，此时以该文件所在目录为根（目录名为 config 则取上一级）。
+#
+# 所有字段都可以省略，省略即用默认值。
+
+network:
+  # HTTP(S)/SOCKS5 代理，如 http://127.0.0.1:7890。留空表示不使用代理。
+  proxy: ""
+  # 单次请求超时（秒）
+  timeout_seconds: 60
+  # 失败重试次数
+  retries: 3
+  # 限速（KB/s），0 表示不限速
+  rate_limit_kbps: 0
+  # GitHub Token（私有仓库或提升 API 限额时使用）。推荐留空并改用环境变量
+  # GITHUB_TOKEN / GH_TOKEN，或写引用形式避免明文：env:GITHUB_TOKEN / cmd:pass show gh
+  github_token: ""
+
+storage:
+  # 数据目录（默认 <根目录>/data）
+  data_dir: ""
+  # 安装包缓存目录（默认 <根目录>/cache，命中缓存则不重复下载）
+  cache_dir: ""
+  # 临时工作目录（默认 <根目录>/temp，解包在这里进行）
+  temp_dir: ""
+  # 安装前备份目录（默认 <根目录>/backup，回滚从这里恢复）
+  backup_dir: ""
+  # 备份保留份数（0 表示不留备份，风险自负）
+  backup_keep: 3
+  # 缓存保留份数
+  cache_keep: 2
+  # 执行前要求的最小可用磁盘余量（MB）
+  min_free_space_mb: 2048
+  # 预算上限（MB），仅用于提示
+  budget_mb: 20480
+
+engine:
+  # 同时下载数
+  download_concurrency: 2
+  # 同时安装的软件数
+  apply_concurrency: 4
+
+behavior:
+  # 执行前弹窗确认
+  confirm_before_apply: true
+  # 检测到占用进程时等待用户确认后再结束
+  wait_for_close: true
+  # 结束进程策略：graceful（先温和再强杀）| force
+  stop_strategy: graceful
+  # 更新完成后自动启动
+  launch_after_update: false
+
+logs:
+  # debug | info | warn | error
+  level: info
+  # 日志目录（默认 <根目录>/log）
+  dir: ""
+  # 是否写审计日志（upkit-audit.jsonl）
+  audit: true
+  max_size_mb: 16
+  max_files: 20
+  max_age_days: 30
+  compress: true
+  max_total_mb: 256
+  # 自动脱敏（token/password/authorization 等）
+  redact: true
+
+ui:
+  # auto | dark | light
+  theme: auto
+  # unicode（圆角）| square（直角）| ascii（纯 ASCII）
+  borders: unicode
+  # 界面刷新间隔（毫秒）
+  refresh_ms: 500
+
+plugins:
+  # 插件目录（默认 <根目录>/plugin；插件子系统尚未实现，配置保留）
+  dir: ""
+  auto_load_trusted: true
+  require_signature: false
+  allowlist: []

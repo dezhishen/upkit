@@ -1,0 +1,40 @@
+# 二进制
+/upkit
+/upkit.exe
+/dist/
+/release/
+*.zip
+
+# 直接 go build ./cmd/xxx 时落在仓库根的二进制（构建脚本的产物在 dist/ 下）
+/upkit-hub
+/upkit-plugin-example
+
+# 便携布局的运行时目录：直接在仓库里跑 go run ./cmd/upkit 时会创建它们，
+# 里面是日志、下载缓存、备份与插件，都不该进版本库。
+/config/
+/log/
+/plugin/
+/data/
+/cache/
+/backup/
+/temp/
+
+# Go
+*.test
+*.out
+vendor/
+
+# 本地配置（保留示例）
+/config.yaml
+!/configs/config.example.yaml
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini

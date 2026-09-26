@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 测试与静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      - name: 显示 Go 版本
+        run: go version
+
+      - name: gofmt 检查
+        run: |
+          # 注意不能写成 unformatted="$(gofmt -l .)"：语法错误时 gofmt 返回非 0，
+          # 但退出码会被命令替换吞掉，检查反而“通过”。
+          if ! unformatted="$(gofmt -l .)"; then
+            echo "gofmt 解析失败（通常是语法错误，比如重复的 package 行）"
+            exit 1
+          fi
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未格式化，请运行 gofmt -w："
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: 文件头检查
+        run: bash scripts/check-headers.sh
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: 单元测试
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: 上传覆盖率
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: ignore
+
+  build:
+    name: 交叉编译校验
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ["windows/amd64", "windows/arm64"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      - name: 编译 ${{ matrix.target }}
+        run: |
+          GOOS="${TARGET%%/*}" GOARCH="${TARGET##*/}" CGO_ENABLED=0 \
+            go build -trimpath -o /dev/null ./cmd/upkit
+        env:
+          TARGET: ${{ matrix.target }}
+
+  smoke:
+    name: 发布演练（不推 release）
+    needs: test
+    # 与真发版共用同一份构建定义（.github/workflows/build-release.yml），
+    # 所以「main 上是绿的」就意味着「现在能发版」—— 插件构建、feed.yaml 生成
+    # 这些环节都在这里提前验过，不会拖到发版那一刻才发现。
+    #
+    # 产物传到 artifact 供下载核对；本工作流不碰 tag、不碰 Release。
+    uses: ./.github/workflows/build-release.yml
+    with:
+      # 演练版本：合法 semver，且一眼能看出不是真版本。
+      version: v0.0.0-dev.${{ github.sha }}
+      artifact-name: release-smoke

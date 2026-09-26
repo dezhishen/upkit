@@ -1,0 +1,79 @@
+name: Build Release Artifacts
+
+# 可复用工作流：构建一套完整的发布产物（upkit + 插件 + 订阅清单）。
+#
+# 它被两处调用，共用同一份定义，避免两条路径各写一遍后悄悄漂移：
+#   · ci.yml     —— main 上的发布演练，产物进 artifact 供下载核对，不发 release
+#   · release.yml —— 真发版，产物交给 publish job 上传到 Release
+#
+# 本工作流**只构建**：不碰 tag、不碰 Release。发布与否由调用方决定。
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 版本号（形如 v1.2.3 或 v1.3.0-rc.1）
+        required: true
+        type: string
+      artifact-name:
+        description: 上传产物时使用的 artifact 名
+        required: false
+        type: string
+        default: release-dist
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 构建发布产物
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      - name: 构建 upkit（windows/amd64 + windows/arm64）
+        run: bash scripts/build.sh --version "${VERSION}"
+
+      - name: 构建示例插件
+        run: |
+          set -euo pipefail
+          plugin_version="${VERSION#v}"
+          for target in windows/amd64 windows/arm64; do
+            bash scripts/build-plugin.sh --release-name -v "${plugin_version}" \
+              -t "$target" ./cmd/upkit-hub
+          done
+
+      - name: 生成官方订阅清单 feed.yaml
+        run: |
+          bash scripts/gen-feed.sh \
+            --plugins-dir dist/plugins \
+            --version "${VERSION#v}" \
+            --base-url "https://github.com/${{ github.repository }}/releases/download/${VERSION}" \
+            --name "upkit-hub=upkit 示例插件集" \
+            --min-host-version "1.0.0" \
+            -o dist/feed.yaml
+
+      - name: 展示产物
+        run: |
+          ls -l dist dist/plugins
+          echo "--- feed.yaml ---"
+          cat dist/feed.yaml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: |
+            dist/*.exe
+            dist/sha256sums.txt
+            dist/feed.yaml
+            dist/plugins/*.exe

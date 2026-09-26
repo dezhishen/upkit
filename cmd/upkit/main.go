@@ -1,0 +1,408 @@
+// Command upkit 是多软件更新维护工具（TUI 唯一前端）。
+//
+// 用法示例：
+//
+//	upkit.exe                     # 启动全屏界面（唯一的交互方式）
+//	upkit.exe --print-paths       # 打印便携目录布局后退出（不需要终端）
+//	upkit.exe --config D:\x\config\settings.yaml
+//	upkit.exe --log-level debug --no-color --ascii
+//	upkit.exe --version           # 打印版本信息
+package main
+
+import (
+	"bytes"
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-isatty"
+
+	"github.com/dezhishen/upkit/internal/apps"
+	"github.com/dezhishen/upkit/internal/core"
+	"github.com/dezhishen/upkit/internal/engine"
+	"github.com/dezhishen/upkit/internal/logging"
+	"github.com/dezhishen/upkit/internal/pluginfeed"
+	"github.com/dezhishen/upkit/internal/pluginhost"
+	"github.com/dezhishen/upkit/internal/registry/all"
+	"github.com/dezhishen/upkit/internal/settings"
+	"github.com/dezhishen/upkit/internal/tui"
+	"github.com/dezhishen/upkit/internal/util"
+	upkitplugin "github.com/dezhishen/upkit/pkg/plugin"
+)
+
+// 由 -ldflags 注入的构建信息。
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+func main() {
+	var (
+		configPath = flag.String("config", "", "设置文件路径（默认 "+defaultConfigPath()+"）")
+		logLevel   = flag.String("log-level", "", "日志级别：debug|info|warn|error（覆盖设置文件）")
+		logDir     = flag.String("log-dir", "", "日志目录（覆盖设置文件）")
+		noColor    = flag.Bool("no-color", false, "禁用颜色输出")
+		asciiUI    = flag.Bool("ascii", false, "仅使用 ASCII 字符绘制界面")
+		showVer    = flag.Bool("version", false, "打印版本并退出")
+		showPaths  = flag.Bool("print-paths", false, "打印目录布局与配置文件位置后退出")
+	)
+	flag.Usage = printUsage
+	flag.Parse()
+
+	if *showVer {
+		fmt.Println(versionString())
+		return
+	}
+	if *showPaths {
+		printLayout()
+		return
+	}
+	if flag.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, "不支持的位置参数："+strings.Join(flag.Args(), " "))
+		flag.Usage()
+		os.Exit(2)
+	}
+	// TUI 需要真实终端；重定向或管道时立即报错，不挂起等待输入。
+	if !isTerminal() {
+		fmt.Fprintln(os.Stderr, "upkit 是全屏终端程序，请在交互式终端中运行。")
+		os.Exit(2)
+	}
+
+	if err := run(optionSet{
+		configPath: *configPath,
+		logLevel:   *logLevel,
+		logDir:     *logDir,
+		noColor:    *noColor,
+		ascii:      *asciiUI,
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "upkit:", err)
+		os.Exit(1)
+	}
+}
+
+// optionSet 保存解析后的命令行参数。
+type optionSet struct {
+	configPath string
+	logLevel   string
+	logDir     string
+	noColor    bool
+	ascii      bool
+}
+
+// run 装配设置、清单、日志、引擎并进入 TUI。
+func run(opts optionSet) error {
+	cfgPath := opts.configPath
+	if strings.TrimSpace(cfgPath) == "" {
+		cfgPath = defaultConfigPath()
+	}
+	set, err := settings.Load(cfgPath)
+	if err != nil {
+		return err
+	}
+	if opts.logLevel != "" {
+		set.Logs.Level = opts.logLevel
+	}
+	if opts.logDir != "" {
+		set.Logs.Dir = opts.logDir
+	}
+	set.Touch()
+	if err := set.Normalize(); err != nil {
+		return err
+	}
+	// 便携布局：config/ log/ plugin/ data/ cache/ backup/ temp/ 全部在 upkit 同级目录下
+	if err := set.EnsureDirs(); err != nil {
+		return err
+	}
+
+	// 软件清单
+	afs, err := loadApps(set)
+	if err != nil {
+		return err
+	}
+	// 首次运行：把默认设置与空清单落到 config/ 下，方便直接编辑
+	if err := set.Bootstrap(); err != nil {
+		return err
+	}
+	if !util.FileExists(afs.Path) {
+		if err := afs.Save(); err != nil {
+			return err
+		}
+	}
+
+	// 日志（TUI 模式下不再输出到终端，避免破坏界面）
+	mgr, err := logging.New(logging.Options{
+		Level:      set.Logs.Level,
+		Dir:        set.Logs.Dir,
+		Audit:      set.Logs.Audit,
+		MaxSizeMB:  set.Logs.MaxSizeMB,
+		MaxFiles:   set.Logs.MaxFiles,
+		MaxAgeDays: set.Logs.MaxAgeDays,
+		MaxTotalMB: set.Logs.MaxTotalMB,
+		Compress:   set.Logs.Compress,
+		Redact:     set.Logs.Redact,
+		Console:    false,
+	})
+	if err != nil {
+		return err
+	}
+	defer mgr.Close()
+	mgr.Info("upkit 启动", "version", versionString(), "config", set.Path, "apps", afs.Path)
+
+	// 插件来源：发现 → 信任校验 → 启动子进程。
+	// 未信任的插件只记录状态、不启动：插件等于任意代码执行，必须显式信任。
+	host, err := pluginhost.NewManager(pluginhost.Config{
+		Dir:      set.Plugins.Dir,
+		Entries:  afs.Sources,
+		DataRoot: set.Storage.DataDir,
+		LogRoot:  set.Logs.Dir,
+		Log:      mgr,
+		Stderr:   &pluginLogWriter{log: mgr},
+	})
+	if err != nil {
+		return err
+	}
+	defer host.Close()
+	host.Load(context.Background())
+	logSourceStates(mgr, host)
+
+	// 把插件来源里的软件并入清单；清单里的显式条目优先，可覆盖插件默认值。
+	mergePluginApps(afs, host)
+
+	// 订阅与授权记录：由界面维护，程序独占读写。
+	// 手工编辑这个文件等价于跳过授权确认，所以界面上不提供“直接改文件”的路径。
+	subStore, err := pluginfeed.LoadStore(filepath.Join(set.ConfigDir(), pluginfeed.FileName))
+	if err != nil {
+		return err
+	}
+
+	// 事件通道 + 引擎
+	evSink, sink := tui.NewSink(1024)
+	eng, err := engine.New(engine.Options{
+		Settings: set,
+		Apps:     afs,
+		Registry: all.Registry(),
+		Log:      mgr,
+		Sink:     sink,
+		Audit:    mgr.Audit,
+		Plugins:  host,
+	})
+	if err != nil {
+		return err
+	}
+
+	model := tui.New(tui.Options{
+		Engine:     eng,
+		Settings:   set,
+		Apps:       afs,
+		Logger:     mgr,
+		Sink:       evSink,
+		Version:    version, // 短版本号：界面标题已含工具名
+		NoColor:    opts.noColor,
+		ASCII:      opts.ascii,
+		Borders:    set.UI.Borders,
+		ConfigPath: set.Path,
+		Host:       host,
+		Feed:       subStore,
+	})
+	p := tea.NewProgram(model, tea.WithAltScreen())
+	_, err = p.Run()
+	return err
+}
+
+// loadApps 读取软件清单。
+func loadApps(set *settings.Settings) (*apps.File, error) {
+	return apps.Load(set.AppsPath())
+}
+
+// logSourceStates 把每个插件来源的结局写进日志（未信任的会把哈希打出来，方便启用）。
+func logSourceStates(log core.Logger, host *pluginhost.Manager) {
+	for _, st := range host.Sources() {
+		if st.State == pluginhost.StateOK {
+			log.Info("插件来源就绪", "source", st.ID, "version", st.Version, "apps", st.Apps, "mode", st.Mode, "exec", st.Exec)
+			continue
+		}
+		log.Warn("插件来源未启用", "source", st.ID, "state", string(st.State), "detail", st.Detail)
+	}
+}
+
+// mergePluginApps 把插件来源里启用的软件并入清单。
+//
+// 清单里已存在的同 ID 条目一律保留（用户显式写的优先），插件条目只是补充。
+// 合并结果只存在于内存中，不会回写用户清单。
+func mergePluginApps(afs *apps.File, host *pluginhost.Manager) {
+	existing := make(map[string]bool, len(afs.Apps))
+	for _, a := range afs.Apps {
+		existing[a.ID] = true
+	}
+	for _, id := range host.SourceIDs() {
+		specs, err := host.AppSpecs(id)
+		if err != nil {
+			continue // 来源不可用的原因已经在状态与日志里说明，不影响其它来源
+		}
+		for _, spec := range specs {
+			if existing[spec.ID] {
+				continue
+			}
+			existing[spec.ID] = true
+			afs.Apps = append(afs.Apps, spec)
+		}
+	}
+}
+
+// pluginLogWriter 把插件进程的 stdout/stderr 逐行转发到宿主日志。
+//
+// 插件的 Logger 以 logfmt（level=... msg=...）写 stderr，这里还原级别后再落到
+// upkit 的日志文件，从而让插件日志与宿主日志共用轮转、脱敏与 run 关联。
+type pluginLogWriter struct {
+	log core.Logger
+	mu  sync.Mutex
+	buf []byte
+}
+
+// logfmtSeparator 是插件日志的键值分隔符（与 pkg/plugin 的写入端一致）。
+const logfmtSeparator = "="
+
+func (w *pluginLogWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := strings.TrimRight(string(w.buf[:i]), "\r")
+		w.buf = w.buf[i+1:]
+		w.emit(line)
+	}
+	return len(p), nil
+}
+
+func (w *pluginLogWriter) emit(line string) {
+	if strings.TrimSpace(line) == "" {
+		return
+	}
+	level, msg := splitPluginLine(line)
+	kv := []any{"line", msg}
+	switch level {
+	case upkitplugin.LogLevelDebug:
+		w.log.Debug("插件日志", kv...)
+	case upkitplugin.LogLevelWarn:
+		w.log.Warn("插件日志", kv...)
+	case upkitplugin.LogLevelError:
+		w.log.Error("插件日志", kv...)
+	default:
+		w.log.Info("插件日志", kv...)
+	}
+}
+
+// splitPluginLine 从 logfmt 行里取出级别与正文。
+func splitPluginLine(line string) (level, msg string) {
+	level, rest := upkitplugin.LogLevelInfo, line
+	if after, ok := strings.CutPrefix(rest, upkitplugin.LogKeyLevel+logfmtSeparator); ok {
+		rest = after
+		if i := strings.IndexByte(rest, ' '); i > 0 {
+			level = strings.ToLower(rest[:i])
+			rest = rest[i+1:]
+		}
+	}
+	if after, ok := strings.CutPrefix(rest, upkitplugin.LogKeyMessage+logfmtSeparator); ok {
+		rest = after
+	}
+	return level, strings.TrimSpace(rest)
+}
+
+// isTerminal 判断当前是否运行在真实终端里。
+func isTerminal() bool {
+	return isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
+}
+
+// defaultConfigPath 返回默认设置文件路径（不可用时退回当前目录）。
+func defaultConfigPath() string {
+	p, err := settings.DefaultPath()
+	if err != nil {
+		return settings.FileName
+	}
+	return p
+}
+
+// printLayout 打印便携布局的解析结果（排障用，不需要终端、不修改磁盘）。
+func printLayout() {
+	cfgPath, err := settings.DefaultPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "upkit:", err)
+		os.Exit(1)
+	}
+	set, err := settings.Load(cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "upkit:", err)
+		os.Exit(1)
+	}
+	if err := set.Normalize(); err != nil {
+		fmt.Fprintln(os.Stderr, "upkit:", err)
+		os.Exit(1)
+	}
+	rows := [][2]string{
+		{"根目录", set.RootDir()},
+		{"设置文件", set.Path},
+		{"软件清单", set.AppsPath()},
+		{"清单导出", set.ManifestPath()},
+		{"日志目录", set.Logs.Dir},
+		{"插件目录", set.Plugins.Dir},
+		{"数据目录", set.Storage.DataDir},
+		{"缓存目录", set.Storage.CacheDir},
+		{"备份目录", set.Storage.BackupDir},
+		{"临时目录", set.Storage.TempDir},
+	}
+	for _, r := range rows {
+		fmt.Printf("%-10s %s\n", r[0], r[1])
+	}
+	fmt.Printf("%-10s %s\n", "切换布局", "用 --config 指定设置文件，或用 "+settings.EnvHome+" 环境变量整体迁移根目录")
+}
+
+// printUsage 输出帮助。
+func printUsage() {
+	out := flag.CommandLine.Output()
+	fmt.Fprintf(out, `upkit %s —— 多软件更新维护工具（TUI）
+
+用法：
+  upkit [选项]
+
+选项：
+`, version)
+	flag.PrintDefaults()
+	fmt.Fprint(out, `
+界面快捷键（按 ? 查看全部）：
+  1..5/Tab  切换面板        c / C  检查选中 / 检查全部
+  u..U      更新选中 / 全部  p      生成执行计划
+  x         卸载            r      回滚到最近备份
+  E / I     导出 / 导入清单  q      退出
+
+目录布局（默认便携模式，全部在 upkit 同级目录下）：
+  config/   settings.yaml、apps.yaml、`+settings.ManifestFileName+`
+  log/      运行日志与审计日志
+  plugin/   插件（子系统尚未实现，目录预留）
+  data/ cache/ backup/ temp/
+
+根目录优先级：`+settings.EnvHome+` 环境变量 > upkit 所在目录（可写时）> 用户配置目录。
+当前设置文件：`+defaultConfigPath()+`
+
+退出码：
+  0  正常退出
+  1  启动失败（配置、日志或界面初始化错误）
+  2  命令行参数错误，或未在交互式终端中运行
+`)
+}
+
+// versionString 返回带构建信息的版本描述。
+func versionString() string {
+	return fmt.Sprintf("upkit %s (commit %s, built %s, %s %s/%s)",
+		version, commit, date, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+}

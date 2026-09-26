@@ -1,0 +1,56 @@
+# upkit 订阅示例
+#
+# 这是一个可以直接照抄的模板：多插件、多架构、相对路径引用产物。
+# 它同时是 internal/pluginfeed 的测试夹具（见 demo_test.go）—— 也就是说这份示例
+# 写错了测试会直接失败。改动它之后请跑：go test ./internal/pluginfeed/
+#
+# 约定速览：
+#   · 平台键是 GOOS/GOARCH，upkit 只支持 windows/amd64 与 windows/arm64
+#   · sha256 是**强制**字段：宿主会拒绝没有摘要、或摘要不符的包
+#   · url 写相对路径时按订阅地址解析，并且强制同源；
+#     写绝对地址且跨域时，必须由用户在界面上单独授权该域名
+#   · mode 省略即 catalog（宿主内置四轴安装）；写 full 表示插件自己接管安装
+#   · min_host_version 用来挡住过旧的宿主，避免启动后才发现协议不兼容
+#   · 格式既可以是 .yaml/.yml 也可以是 .json（同一套结构）
+#   · 如果同一个订阅还要服务别的工具，可以放其它平台的包 —— upkit 会忽略它们，
+#     只挑自己平台的那一份
+
+schema: 1
+name: upkit 示例源
+updated_at: 2026-09-26T00:00:00Z
+
+plugins:
+  # catalog 模式：插件只回答「有哪些版本、下载什么」。
+  - id: demo-plugin
+    name: 示例插件
+    description: 演示多架构分发的 catalog 插件
+    homepage: https://example.com/demo-plugin
+    version: 1.2.0
+    mode: catalog
+    min_host_version: "1.0.0"
+    packages:
+      windows/amd64:
+        url: demo-plugin-windows-amd64.exe
+        sha256: 39c669193d4db47833b36d20398934a40ace97767d238f36200a322910fa664c
+        size: 28
+      windows/arm64:
+        url: demo-plugin-windows-arm64.exe
+        sha256: 39c669193d4db47833b36d20398934a40ace97767d238f36200a322910fa664c
+        size: 28
+
+  # 同一个订阅里可以放多个插件，各自有独立的版本。
+  - id: demo-agent
+    name: 示例代理
+    description: 演示一个订阅分发多个插件
+    homepage: https://example.com/demo-agent
+    version: 2.0.0
+    min_host_version: "1.0.0"
+    packages:
+      windows/amd64:
+        url: demo-agent-windows-amd64.exe
+        sha256: 39c669193d4db47833b36d20398934a40ace97767d238f36200a322910fa664c
+        size: 28
+      windows/arm64:
+        url: demo-agent-windows-arm64.exe
+        sha256: 39c669193d4db47833b36d20398934a40ace97767d238f36200a322910fa664c
+        size: 28

@@ -1,0 +1,45 @@
+# upkit 插件订阅示例
+#
+# 把这份文件放到任意 HTTP(S) 服务器上，然后在 upkit 的「来源」面板里添加它的地址即可。
+#
+# 三种扩展名都支持：
+#   .yaml / .yml  —— 推荐，可以写注释
+#   .json         —— JSON 是 YAML 的子集，同一套结构直接可用，但不能有注释与尾随逗号
+#
+# 注意：解析是严格模式，字段名写错会直接报错，而不是被忽略。
+
+schema: 1                       # 必填：订阅格式版本（当前只支持 1）
+name: 官方插件源                # 展示用
+updated_at: 2026-09-26T12:00:00Z
+
+plugins:
+  - id: corp-index              # 必填：插件 id（^[a-z0-9][a-z0-9._-]{0,63}$）
+    name: 企业软件源
+    description: 内网镜像与内部软件清单
+    homepage: https://example.com/corp-index
+    version: 1.2.0              # 必填：用于更新检测
+    mode: catalog               # catalog（只提供来源）| full（自己接管安装）
+    min_host_version: "1.0.0"   # 可选：宿主更旧时该条目会被拒绝，而不是装了才发现协议不兼容
+
+    packages:                   # 必填：至少要有宿主当前平台的包
+      # 平台键用 windows/<架构>：upkit 只发行 Windows 版本
+      windows/amd64:
+        # 相对路径：相对**订阅地址**解析，必须与订阅同源，因此不需要额外授权
+        url: ./dist/corp-index-windows-amd64.exe
+        sha256: "9f2c0d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c"
+        size: 4194304           # 可选：仅用于进度显示
+
+      windows/arm64:
+        # 绝对地址可以跨域（例如走 CDN），但宿主会在安装时单独向你确认该域名
+        url: https://cdn.example.com/plugins/corp-index-windows-arm64.exe
+        sha256: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b"
+        size: 4194304
+
+  - id: home-mirror             # 一个订阅可以提供多个插件
+    name: 家用镜像
+    version: 0.9.0
+    mode: catalog
+    packages:
+      windows/amd64:
+        url: ./dist/home-mirror.exe
+        sha256: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"

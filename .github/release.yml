@@ -1,0 +1,54 @@
+# GitHub 自动生成 release notes 的分类规则。
+#
+# 用它的场合：`gh release create --generate-notes`（见 .github/workflows/release.yml）。
+# 它按 PR 上的标签归类，没有标签的改动落到最后的通配类别。
+#
+# 这样做的好处是不用维护 CHANGELOG.md，也不用引入额外工具：给 PR 打标签，
+# changelog 就自动成型；直接推的 commit 会出现在「其它变更」里，不会丢。
+
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+    authors:
+      - dependabot
+      - dependabot[bot]
+      - github-actions
+      - github-actions[bot]
+
+  categories:
+    - title: ⚠️ 破坏性变更
+      labels:
+        - breaking
+        - breaking-change
+
+    - title: ✨ 新功能
+      labels:
+        - feature
+        - enhancement
+
+    - title: 🐛 问题修复
+      labels:
+        - fix
+        - bug
+        - bugfix
+
+    - title: ⚡ 性能与重构
+      labels:
+        - performance
+        - refactor
+
+    - title: 📚 文档与示例
+      labels:
+        - documentation
+        - docs
+
+    - title: 🧰 构建与依赖
+      labels:
+        - build
+        - ci
+        - dependencies
+
+    - title: 🔧 其它变更
+      labels:
+        - "*"

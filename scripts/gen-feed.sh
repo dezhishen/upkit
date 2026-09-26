@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# 生成 upkit 官方订阅清单（feed.yaml）。
+#
+# 用法:
+#   bash scripts/gen-feed.sh --version <ver> --base-url <url> [选项]
+#
+# 选项:
+#   -o, --out <file>           输出文件（默认 dist/feed.yaml）
+#       --plugins-dir <dir>    插件产物目录（默认 dist/plugins）
+#       --version <ver>        feed 里 plugins[].version（一般与 tag 一致）
+#       --base-url <url>       产物下载地址前缀（release 的 download 地址）
+#       --name <id>=<名称>     覆盖某个插件的展示名（可重复）
+#   -n, --name-default <名称>  订阅本身的名称
+#       --mode <catalog|full>  插件的安装模式（默认 catalog）
+#       --min-host-version <v> 要求的最低宿主版本（默认不写）
+#   -h, --help                 显示本帮助
+#
+# 产物文件名约定 <插件ID>-<os>-<arch>[.exe]，例如：
+#     upkit-hub-windows-amd64.exe  ->  id=upkit-hub, windows/amd64
+#
+# 为什么要有这个脚本：内置订阅（BuiltinFeedURL）指向的是 release 附件，而附件里
+# 写死的 sha256 必须与本次发布的产物严格对应。手工填摘要迟早会错，所以让发布流水线
+# 在构建之后直接算出来。
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+OUT="dist/feed.yaml"
+PLUGINS_DIR="dist/plugins"
+VERSION=""
+BASE_URL=""
+FEED_NAME="upkit 官方源"
+MODE="catalog"
+MIN_HOST=""
+ALLOW_PARTIAL=0
+declare -A NAME_OVERRIDES=()
+
+# upkit 支持的平台。改了这里请同步改 internal/pluginfeed/schema.go 的
+# SupportedPlatforms()（internal/pluginfeed 里有个测试会在两者不一致时报警）。
+SUPPORTED_PLATFORMS="windows/amd64 windows/arm64"
+
+usage() {
+  sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+die() { echo "错误: $*" >&2; exit 1; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--out)            OUT="${2:-}"; shift 2 ;;
+    --plugins-dir)       PLUGINS_DIR="${2:-}"; shift 2 ;;
+    --version)           VERSION="${2:-}"; shift 2 ;;
+    --base-url)          BASE_URL="${2:-}"; shift 2 ;;
+    --name)              NAME_OVERRIDES["${2%%=*}"]="${2#*=}"; shift 2 ;;
+    -n|--name-default)   FEED_NAME="${2:-}"; shift 2 ;;
+    --mode)              MODE="${2:-}"; shift 2 ;;
+    --min-host-version)  MIN_HOST="${2:-}"; shift 2 ;;
+    --allow-partial)     ALLOW_PARTIAL=1; shift ;;
+    -h|--help)           usage; exit 0 ;;
+    *) die "未知参数: $1（用 -h 查看用法）" ;;
+  esac
+done
+
+[[ -n "$VERSION" ]] || die "缺少 --version（一般传 tag 去掉 v 前缀的版本号）"
+[[ -n "$BASE_URL" ]] || die "缺少 --base-url（产物下载地址前缀，末尾不要带斜杠）"
+BASE_URL="${BASE_URL%/}"
+[[ -d "$PLUGINS_DIR" ]] || die "找不到插件产物目录 $PLUGINS_DIR"
+case "$MODE" in catalog|full) ;; *) die "--mode 只能是 catalog 或 full" ;; esac
+
+# ── 摘要工具（Linux 用 sha256sum，macOS 用 shasum）────────────
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    die "找不到 sha256sum 或 shasum，无法计算摘要"
+  fi
+}
+
+size_of() { wc -c <"$1" | tr -d ' '; }
+
+# ── 扫描产物，按插件归组 ──────────────────────────────────────
+# 用「id|平台|文件名」三列的临时文本收集，最后排序输出，保证同样输入得到同样的文件
+# （Diff 友好，也方便人核对）。
+entries="$(mktemp)"
+trap 'rm -f "$entries"' EXIT
+
+shopt -s nullglob
+found=0
+for file in "$PLUGINS_DIR"/*; do
+  [[ -f "$file" ]] || continue
+  name="$(basename "$file")"
+  stem="${name%.exe}"
+  if [[ ! "$stem" =~ ^(.+)-(windows|linux|darwin)-(amd64|arm64|386|arm)$ ]]; then
+    echo "跳过（文件名不符合 <插件ID>-<os>-<arch> 约定）: $name" >&2
+    continue
+  fi
+  id="${BASH_REMATCH[1]}"
+  os_name="${BASH_REMATCH[2]}"
+  arch="${BASH_REMATCH[3]}"
+  if [[ "$os_name" != "windows" ]]; then
+    echo "跳过（upkit 只支持 Windows）: $name" >&2
+    continue
+  fi
+  printf '%s|%s/%s|%s|%s|%s\n' "$id" "$os_name" "$arch" "$name" "$(sha256_of "$file")" "$(size_of "$file")" >>"$entries"
+  found=$((found + 1))
+done
+
+(( found > 0 )) || die "$PLUGINS_DIR 里没有可用的 Windows 插件产物"
+
+# ── 发布前检查：每个插件必须覆盖全部受支持平台 ──────────────────
+# 漏一个架构，那个架构的用户会在「校验订阅」这一步失败 —— 而那本来可以在发布前
+# 就发现。确实有意只发部分架构时用 --allow-partial 显式跳过。
+if (( ALLOW_PARTIAL == 0 )); then
+  for id in $(cut -d'|' -f1 "$entries" | LC_ALL=C sort -u); do
+    for platform in $SUPPORTED_PLATFORMS; do
+      if ! grep -q "^${id}|${platform}|" "$entries"; then
+        die "插件 ${id} 缺少 ${platform} 的产物（如确实只发部分平台，加 --allow-partial）"
+      fi
+    done
+  done
+fi
+
+# ── 生成 YAML ─────────────────────────────────────────────────
+mkdir -p "$(dirname "$OUT")"
+{
+  cat <<'HEADER'
+# upkit 官方订阅清单（由 scripts/gen-feed.sh 自动生成，请勿手工编辑）
+#
+# 它作为 release 附件发布，内置订阅地址指向 .../releases/latest/download/feed.yaml。
+# 放在发布附件而不是仓库里的原因是：清单里写死的产物地址与 sha256 必须与某一次发布
+# 严格对应，仓库里的文件会被后续提交悄悄改动，让已发布版本的行为跟着漂移。
+#
+# 摘要由发布流水线在构建之后直接计算，因此与产物天然一致。
+
+HEADER
+  printf 'schema: 1\n'
+  printf 'name: %s\n' "$FEED_NAME"
+  printf 'updated_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'plugins:\n'
+
+  # 按 id 排序；平台按 amd64 → arm64 的固定顺序
+  current_id=""
+  while IFS='|' read -r id platform file sha size; do
+    [[ -n "$id" ]] || continue
+    if [[ "$id" != "$current_id" ]]; then
+      if [[ -n "$current_id" ]]; then
+        printf '\n'
+      fi
+      current_id="$id"
+      printf '  - id: %s\n' "$id"
+      printf '    name: %s\n' "${NAME_OVERRIDES[$id]:-$id}"
+      printf '    version: %s\n' "$VERSION"
+      printf '    mode: %s\n' "$MODE"
+      [[ -n "$MIN_HOST" ]] && printf '    min_host_version: "%s"\n' "$MIN_HOST"
+      printf '    packages:\n'
+    fi
+    printf '      %s:\n' "$platform"
+    printf '        url: %s/%s\n' "$BASE_URL" "$file"
+    printf '        sha256: %s\n' "$sha"
+    printf '        size: %s\n' "$size"
+  done < <(LC_ALL=C sort -t'|' -k1,1 -k2,2 "$entries")
+} >"$OUT"
+
+echo "==> 已生成订阅清单 $OUT"
+echo "    版本:   $VERSION"
+echo "    插件:   $(LC_ALL=C sort -t'|' -k1,1 -u "$entries" | cut -d'|' -f1 | paste -sd' ' -)"
+echo "    平台:   $(cut -d'|' -f2 "$entries" | LC_ALL=C sort -u | paste -sd' ' -)"
