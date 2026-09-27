@@ -158,16 +158,21 @@ func (m *Model) adjustSetting(delta int) {
 	}
 	// 配色这类「改了就该看见」的设置要立刻生效：改完什么也没发生，用户会以为
 	// 这个选项是坏的。
-	m.applyThemeSetting()
+	if m.applyThemeSetting() && f.Key == "ui.theme" {
+		// 只换前景色时，「生效了」这件事在黑底终端上几乎看不出来，
+		// 所以再补一句：现在用哪套、底色由谁定。
+		m.setStatus("配色已切到 " + m.theme.Summary())
+	}
 }
 
-// applyThemeSetting 把设置里的显示选项（配色方向、边框样式）应用到当前主题。
+// applyThemeSetting 把设置里的显示选项（配色方向、边框样式）应用到当前主题，
+// 返回是否真的换了配色。
 //
 // 这些项改了就该当场看见效果：否则用户改完什么也没发生，会以为选项是坏的。
 // ASCII / 无颜色这两项来自命令行，不走设置，重建时按现值带上。
-func (m *Model) applyThemeSetting() {
+func (m *Model) applyThemeSetting() bool {
 	if m.ctrl == nil {
-		return
+		return false
 	}
 	// 从表单里取当前值：枚举项的「当前是什么」就写在表单上，
 	// 控制层不额外提供按 key 读枚举的接口。
@@ -192,9 +197,12 @@ func (m *Model) applyThemeSetting() {
 		Borders: borders,
 		Variant: variant,
 	})
-	if next.Variant() != m.theme.Variant() || next.Borders != m.theme.Borders {
-		m.theme = next
+	if next.Variant() == m.theme.Variant() && next.Borders == m.theme.Borders &&
+		next.Painted() == m.theme.Painted() {
+		return false
 	}
+	m.theme = next
+	return true
 }
 
 // settingValuePrompt 造文本项/数字项的编辑弹窗。

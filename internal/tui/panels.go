@@ -25,6 +25,10 @@ func (m Model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
 	v.WindowTitle = "upkit " + m.Version()
+	// 自己铺底色时顺手把终端背景色也设上（OSC 11）：终端会把没被文字盖住的地方
+	// （首帧之前的一瞬、窗口比内容大时）一起刷成同一个色，不会闪一下黑底。
+	// 不铺底（auto）时为 nil，不动用户的终端配色。
+	v.BackgroundColor = m.theme.Background()
 	if !m.opts.NoMouse {
 		// 只开「单元格移动」级别：够用（点击/滚轮），事件量又比全量移动小得多。
 		v.MouseMode = tea.MouseModeCellMotion
@@ -50,15 +54,20 @@ func (m Model) render() string {
 	foot := m.viewFooter(w)
 	base := m.padBlock(head + "\n" + m.viewBody(w, m.bodyHeight()) + "\n" + actions + "\n" + foot)
 
+	// 弹窗与铺底色都在最后一步做：铺底色要把底色补进每一段文字之后，
+	// 必须等版面彻底定型（否则补进去的转义会被后续的截断/合成丢掉）。
+	var view string
 	switch {
 	case m.prompt != nil:
-		return m.overlay(base, m.viewPrompt())
+		view = m.overlay(base, m.viewPrompt())
 	case m.confirm != nil:
-		return m.overlay(base, m.viewConfirm())
+		view = m.overlay(base, m.viewConfirm())
 	case m.help:
-		return m.overlay(base, m.viewHelp())
+		view = m.overlay(base, m.viewHelp())
+	default:
+		view = base
 	}
-	return base
+	return m.theme.Paint(view, m.width)
 }
 
 // 界面与终端边缘之间的间隔。

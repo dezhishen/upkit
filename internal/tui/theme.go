@@ -37,6 +37,13 @@ type Palette struct {
 	Dim color.Color
 	// SelFg / SelBg 是选中行的前景与背景。
 	SelFg, SelBg color.Color
+	// Base 是界面自己铺的底色与默认前景，直接写成 256 色转义序列：
+	// 它要插在每一处 SGR 复位（ESC[m）之后，而 lipgloss 的 Color 取不回色号字符串。
+	// 只有在用户明确指定 dark/light 时才用（auto 交给终端，别跟终端配色打架）。
+	Base string
+	// BaseBg 是同一个底色，值类型，交给 bubbletea 当终端背景色（OSC 11）用。
+	// 与 Base 里的 48;5;N 必须是同一个颜色（有测试盯着）。
+	BaseBg color.Color
 }
 
 // 深色终端（黑底）用的配色。
@@ -54,6 +61,9 @@ var darkPalette = Palette{
 	Dim:     lipgloss.Color("245"), // 灰
 	SelFg:   lipgloss.Color("232"),
 	SelBg:   lipgloss.Color("75"),
+	// 深灰底 + 浅灰字：白底终端上选 dark、或黑底终端上选 dark 时用。
+	Base:   "\x1b[38;5;252;48;5;234m",
+	BaseBg: color.RGBA{R: 0x1c, G: 0x1c, B: 0x1c, A: 0xff}, // = 256 色 234
 }
 
 // 浅色终端（白底）用的配色：整体压暗、提高饱和度，保证在白底上读得清。
@@ -68,6 +78,9 @@ var lightPalette = Palette{
 	Dim:     lipgloss.Color("240"), // 中灰
 	SelFg:   lipgloss.Color("231"),
 	SelBg:   lipgloss.Color("25"),
+	// 浅灰底 + 近黑字：黑底终端上选 light 时，整块界面会变成浅色。
+	Base:   "\x1b[38;5;235;48;5;255m",
+	BaseBg: color.RGBA{R: 0xee, G: 0xee, B: 0xee, A: 0xff}, // = 256 色 255
 }
 
 // ThemeOptions 是主题的几个开关：命令行与设置都汇到这里。
@@ -87,6 +100,13 @@ type Theme struct {
 	p       Palette
 	// variant 记录最终选中的方向（auto 解析之后的结果），供测试与界面说明用。
 	variant string
+	// paint 为真时界面自己铺底色（用户明确选了 dark/light）。
+	//
+	// 为什么需要：终端底色是终端的事，我们改不了。用户在白底终端上选 light、
+	// 或黑底终端上选 light，如果只是换一批前景色，黑底上看到的就是「一堆看不清的
+	// 暗字」—— 看起来就像设置没生效。明确指定方向时把底色一并铺上，选项的效果
+	// 才一眼可见，也才能摆脱「auto 在 Windows 上永远判成深色」这个限制。
+	paint bool
 }
 
 // NewTheme 构造主题。
@@ -98,11 +118,68 @@ func NewTheme(opts ThemeOptions) Theme {
 		Borders: opts.Borders,
 		p:       paletteFor(variant),
 		variant: variant,
+		paint:   !opts.NoColor && explicitVariant(opts.Variant),
 	}
 }
 
 // Variant 返回最终生效的配色方向（auto 已解析）。
 func (t Theme) Variant() string { return t.variant }
+
+// Painted 报告界面是否自己铺底色（而不是交给终端）。
+func (t Theme) Painted() bool { return t.paint && t.p.Base != "" }
+
+// Background 返回界面自己的底色（不铺底时为 nil，即不动终端背景）。
+func (t Theme) Background() color.Color {
+	if !t.Painted() {
+		return nil
+	}
+	return t.p.BaseBg
+}
+
+// Summary 用一句话说明当前配色，供状态栏显示。
+//
+// 「选了 light 但看不出变化」是这一轮要修的问题：只在文档里写「light 适用于白底
+// 终端」不够，界面上得能直接看到现在用的是哪套、底色由谁定。
+func (t Theme) Summary() string {
+	name := "深色"
+	if t.variant == "light" {
+		name = "浅色"
+	}
+	if t.Painted() {
+		return name + "（界面自己铺底色）"
+	}
+	return name + "（跟随终端底色）"
+}
+
+// Paint 把底色与默认前景铺满整块。
+//
+// 只能事后补：lipgloss 给每段文字单发一对「转义 + ESC[m 复位」，复位会把底色
+// 一起清掉，外层再套一层 Background 也不会生效（ANSI 没有作用域概念）。
+// 于是每行开头补一次、每次复位之后再补一次，保证没有一处文字落在终端自己的底色上；
+// 行尾补齐到整屏宽度，右侧才不会露出一条终端底色。
+func (t Theme) Paint(block string, width int) string {
+	if !t.Painted() {
+		return block
+	}
+	base := t.p.Base
+	lines := strings.Split(block, "\n")
+	for i, l := range lines {
+		if pad := width - Width(l); pad > 0 {
+			l += strings.Repeat(" ", pad)
+		}
+		lines[i] = base + strings.ReplaceAll(l, "\x1b[m", "\x1b[m"+base)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// explicitVariant 报告用户是不是明确指定了方向（auto / 空 都算没指定）。
+func explicitVariant(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "dark", "light":
+		return true
+	}
+	return false
+}
 
 // paletteFor 按方向取配色。
 func paletteFor(variant string) Palette {
