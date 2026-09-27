@@ -131,6 +131,16 @@ jobs:
             gh release create "${create_args[@]}" "${files[@]}"
           fi
 
+          # 事后复核。gh 有可能什么都没做成却退出 0（权限不足、仓库功能受限等），
+          # 那样这盏绿灯是假的 —— v0.0.1 就这么"成功"过一次，实际一个 release 都
+          # 没生成，直到去 Releases 页面才发现。用 API 确认一次，把这种情况变成
+          # 明确的失败。
+          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "::error::${VERSION} 的 Release 不存在或不可读；gh 报了成功但实际没发布"
+            echo "  检查仓库是否启用了 Releases，以及 job 是否有 contents: write" >&2
+            exit 1
+          fi
+
           {
             echo "### 已发布 $VERSION"
             echo
