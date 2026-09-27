@@ -111,7 +111,7 @@ jobs:
           check ./internal/manifest      82
           check ./internal/method        65
           check ./internal/method/plugin 90
-          check ./internal/tui           66
+          check ./internal/tui           67
           check ./internal/control      85
           check ./internal/source/githubrelease 78
 

@@ -856,17 +856,7 @@ func (m Model) updateOverview(key string) (tea.Model, tea.Cmd) {
 			return m, m.planCmd(a.Ref.ID)
 		}
 	case "space":
-		a := m.current()
-		if a == nil {
-			return m, nil
-		}
-		// SetAppEnabled 自己会落盘（状态写在来源声明上），这里不用再存一次。
-		if err := m.ctrl.SetAppEnabled(a.Ref.ID, !appEnabled(a, m.ctrl)); err != nil {
-			m.setStatusErr(err)
-			return m, nil
-		}
-		m.setStatus("已更新启用状态")
-		return m, m.startCheck("正在检查上游版本", nil)
+		return m.toggleEnabled()
 	case "h":
 		// 筛选：停用的默认显示（看得出自己停用过什么），列表太长时按 h 收起来。
 		m.hideDisabled = !m.hideDisabled
@@ -902,6 +892,51 @@ func (m Model) updateOverview(key string) (tea.Model, tea.Cmd) {
 		path := m.ctrl.ManifestPath()
 		m.prompt = newPromptBox("导入清单", "文件路径", path, false,
 			func(mm *Model, v string) tea.Cmd { mm.busy = true; return mm.importCmd(v) })
+	}
+	return m, nil
+}
+
+// toggleEnabled 切换选中软件的启用状态。
+//
+// 启停是本地配置：只改清单（落盘）并把内存里这一条改掉，界面当场就变，不重载、
+// 不联网。以前这里顺手触发了一次全量检查 —— 慢网络下按空格后那一行要等整轮检查
+// 跑完才更新，看起来就是「按了没反应 / 不会刷新」。
+func (m Model) toggleEnabled() (tea.Model, tea.Cmd) {
+	a := m.current()
+	if a == nil {
+		return m, nil
+	}
+	next := !appEnabled(a, m.ctrl)
+	// SetAppEnabled 自己会落盘（状态写在来源声明上），这里不用再存一次。
+	if err := m.ctrl.SetAppEnabled(a.Ref.ID, next); err != nil {
+		m.setStatusErr(err)
+		return m, nil
+	}
+
+	// 清单改了，但内存里这份 App 还是旧的：就地改掉，这一帧就画得对。
+	// 引擎持有的也是同一个指针，所以「停用的软件不参与更新」这条规则立刻跟上。
+	a.Ref.Disabled = !next
+	if !next {
+		a.Note = "已停用（不参与检查与更新）"
+		a.Action = core.ActionNoOp
+		a.CheckErr = nil
+		if m.hideDisabled {
+			// 开着筛选时这一行会被藏起来：光标得跟着收，否则它会停在
+			// 一条屏幕上已经不存在的行上，接着按回车操作的是别的软件。
+			m.setStatus(a.Ref.DisplayName() + " 已停用，已从列表隐藏（按 h 显示全部）")
+			m.clampCursor()
+			return m, nil
+		}
+		m.setStatus(a.Ref.DisplayName() + " 已停用（按空格可重新启用）")
+		return m, nil
+	}
+	a.Note = ""
+	m.setStatus(a.Ref.DisplayName() + " 已启用")
+	if a.Release.Version == "" && a.Status.Version == "" {
+		// 停用期间不查上游，所以刚启用的软件很可能一次都没查过 —— 只补查它一个，
+		// 不去动其它行已经查好的结果。
+		m.setStatus(a.Ref.DisplayName() + " 已启用，正在检查…")
+		return m, m.startCheck("正在检查 "+a.Ref.DisplayName(), []string{a.Ref.ID})
 	}
 	return m, nil
 }
