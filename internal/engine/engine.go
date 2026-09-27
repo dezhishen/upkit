@@ -147,6 +147,13 @@ func (e *Engine) List(ctx context.Context) ([]*App, error) {
 		if token != "" {
 			ref.SourceOpts["token"] = token
 		}
+		if ref.Disabled {
+			// 停用的软件：不建适配器。它可能依赖一个没加载的插件来源，
+			// 或者声明了一个当前不存在的适配器 —— 那都不该让整份列表报错。
+			// 用户要的是「看得见自己停用了什么」，不是被一个停用项拦住。
+			out = append(out, &App{Ref: ref, Note: "已停用"})
+			continue
+		}
 		if _, err := e.reg.Method(ref, e.deps()); err != nil {
 			return nil, err
 		}
@@ -235,6 +242,15 @@ func (e *Engine) checkOne(ctx context.Context, a *App) {
 		e.log.Warn("读取本地状态失败", "app", ref.ID, "error", err.Error())
 	}
 	a.Status = status
+
+	if ref.Disabled {
+		// 停用只影响「要不要动它」：本地探测照做（用户仍能看到装的是什么版本），
+		// 但不去问上游，也不给出更新建议。
+		a.Note = "已停用（不参与检查与更新）"
+		a.Action = core.ActionNoOp
+		a.CheckErr = nil
+		return
+	}
 
 	src, err := e.reg.Source(ref, e.deps())
 	if err != nil {

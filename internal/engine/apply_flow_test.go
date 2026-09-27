@@ -146,6 +146,9 @@ func (m *fakeMethod) Backups(context.Context, core.Request) ([]core.Backup, erro
 	return m.backups, nil
 }
 
+// boolPtr 取一个布尔指针（清单里的开关字段是指针，nil 表示「没写过」）。
+func boolPtr(v bool) *bool { return &v }
+
 // syncRecorder 是并发安全的收集器。
 //
 // 引擎在批量执行时会并发地发事件、写审计，普通切片在这里真的会丢东西 ——
@@ -708,5 +711,77 @@ func TestPruneCacheKeepsNewest(t *testing.T) {
 	}
 	if len(got) != 2 || !got["c.zip"] || !got["d.zip"] {
 		t.Fatalf("应只留最新的两份，实际 %v", got)
+	}
+}
+
+// 停用的软件不参与检查与更新，但必须留在列表里（用户要能看见它、再启回来）。
+//
+// 以前清单层直接把停用的软件过滤掉：按了空格之后它就从界面上消失，既看不到也
+// 启不回来。
+func TestDisabledAppVisibleButNotActedOn(t *testing.T) {
+	f := newFixture(t, nil)
+	f.addApp(t, "off")
+	f.afs.Apps[1].Enabled = boolPtr(false)
+
+	ctx := context.Background()
+	list, err := f.eng.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("停用的软件也要在列表里：%+v", list)
+	}
+	off := f.eng.Find("off")
+	if off == nil || !off.Ref.Disabled {
+		t.Fatalf("停用标记没带上：%+v", off)
+	}
+
+	// 检查：只做本地探测，不问上游（上游是 httptest 服务，问一次 requests 会 +1）。
+	before := atomic.LoadInt32(&f.requests)
+	if _, err := f.eng.CheckOne(ctx, "off"); err != nil {
+		t.Fatalf("检查停用的软件不该报错: %v", err)
+	}
+	if got := atomic.LoadInt32(&f.requests); got != before {
+		t.Fatalf("停用的软件不该去问上游（请求数 %d → %d）", before, got)
+	}
+	if off.Note != "" && !strings.Contains(off.Note, "已停用") {
+		t.Fatalf("应说明它被停用：%q", off.Note)
+	}
+
+	// 计划与执行都要明确拒绝，并告诉用户怎么恢复。
+	if _, err := f.eng.Plan(ctx, "off"); !errors.Is(err, core.ErrDisabled) {
+		t.Fatalf("停用的软件不该能生成计划: %v", err)
+	}
+	if _, err := f.eng.Apply(ctx, "off"); !errors.Is(err, core.ErrDisabled) {
+		t.Fatalf("停用的软件不该能执行: %v", err)
+	}
+	if len(f.method.execs) != 0 {
+		t.Fatalf("停用的软件不该真的被安装：%+v", f.method.execs)
+	}
+
+	// 批量执行直接跳过它：不参与，不是失败。
+	results := f.eng.ApplyMany(ctx, []string{"demo", "off"}, 2)
+	if len(results) != 1 || results[0].AppID != "demo" {
+		t.Fatalf("批量执行应只留启用的软件：%+v", results)
+	}
+}
+
+// 停用的软件不参与冲突判定：它不该把在用的那个软件标成「冲突」。
+func TestDisabledAppDoesNotShadowOthers(t *testing.T) {
+	f := newFixture(t, nil)
+	f.addApp(t, "dup")
+	f.afs.Apps[1].Install.Path = f.afs.Apps[0].Install.Path // 同目标
+	f.afs.Apps[1].Name = f.afs.Apps[0].Name
+	f.afs.Apps[1].Enabled = boolPtr(false)
+
+	list, err := f.eng.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if list[0].Shadowed {
+		t.Fatalf("在用的软件不该被一个停用的软件挤掉：%+v", list[0].Conflict)
+	}
+	if list[1].Conflict != nil {
+		t.Fatalf("停用的软件本身也不参与冲突判定：%+v", list[1].Conflict)
 	}
 }

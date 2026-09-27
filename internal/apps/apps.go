@@ -72,6 +72,12 @@ type File struct {
 	// 两个用途：展开插件声明的 ${ROOT}，以及给没写明安装路径的软件兜一个落点。
 	// 由调用方（装配时、控制层保存设置后）注入 —— apps 包不认识 settings。
 	InstallRoot string `yaml:"-"`
+	// ForceInstallRoot 为真时忽略插件声明的安装目录，一律用
+	// <安装根目录>/<软件名>（见 settings.Storage.ForceInstallRoot）。
+	//
+	// 只对「upkit 自己落地」的方法生效：exe-installer / msiexec / plugin
+	// 的落点不由我们决定，那里的路径是「去哪找它」，改了只会連探测都找不到。
+	ForceInstallRoot bool `yaml:"-"`
 }
 
 // Option 是装配清单时可选项。
@@ -86,6 +92,14 @@ func WithInstallRoot(dir string) Option {
 //
 // 只改下一次展开清单时用的值：已经在跑的安装不受影响，新位置在下次检查时才体现。
 func (f *File) SetInstallRoot(dir string) { f.InstallRoot = strings.TrimSpace(dir) }
+
+// WithForceInstallRoot 指定「所有软件都装到安装根目录下」（装配时用）。
+func WithForceInstallRoot(v bool) Option {
+	return func(f *File) { f.ForceInstallRoot = v }
+}
+
+// SetForceInstallRoot 改「强制装到安装根目录下」（设置改动后由控制层调用）。
+func (f *File) SetForceInstallRoot(v bool) { f.ForceInstallRoot = v }
 
 // SourceSpec 描述一个「软件来源」。
 //
@@ -313,9 +327,6 @@ func (f *File) Build() ([]core.AppRef, error) {
 	out := make([]core.AppRef, 0, len(f.Apps))
 	seen := map[string]int{}
 	for i, spec := range f.Apps {
-		if !spec.EnabledValue() {
-			continue
-		}
 		ref, err := f.buildOne(spec)
 		if err != nil {
 			return nil, fmt.Errorf("apps[%d]: %w", i, err)
@@ -323,6 +334,9 @@ func (f *File) Build() ([]core.AppRef, error) {
 		if prev, dup := seen[ref.ID]; dup {
 			return nil, fmt.Errorf("apps[%d]: 重复的 app id %q（与 apps[%d] 冲突）", i, ref.ID, prev)
 		}
+		// 停用的软件照样展开：用户要能看见它、把它启回来。
+		// 「不参与检查与更新」由引擎按这个标记决定（见 engine.checkOne）。
+		ref.Disabled = !spec.EnabledValue()
 		seen[ref.ID] = i
 		out = append(out, ref)
 	}
@@ -347,6 +361,13 @@ func (f *File) buildOne(spec AppSpec) (core.AppRef, error) {
 	}
 
 	method, methodOpts := splitKind(spec.Method, "portable-inplace")
+	// 强制安装根目录：只对「upkit 自己落地」的方法生效。别的做法里这个路径只是
+	// 「去哪找它」，改成我们的目录只会让探测永远找不到。
+	if f.ForceInstallRoot && method == "portable-inplace" {
+		if p := f.defaultInstallPath(spec); p != "" {
+			path = p
+		}
+	}
 	source, sourceOpts := splitKind(spec.Source, "github-release")
 	unpack, unpackOpts := splitKind(spec.Unpack, "")
 	if unpack == "" {

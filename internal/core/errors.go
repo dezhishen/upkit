@@ -27,6 +27,8 @@ var (
 	ErrUserAborted = errors.New("用户取消")
 	// ErrRollbackFailed 回滚失败，需要人工介入（错误里必须带备份路径）。
 	ErrRollbackFailed = errors.New("回滚失败")
+	// ErrDisabled 软件在清单里被停用：不参与检查与更新。
+	ErrDisabled = errors.New("软件已停用")
 	// ErrConflict 多源冲突（同 ID / 同目标）。
 	ErrConflict = errors.New("软件冲突")
 )

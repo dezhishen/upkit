@@ -140,11 +140,14 @@ type Model struct {
 	width, height int
 	tab           tabID
 
-	apps    []*engine.App
-	cursor  int
-	offset  int
-	detailY int
-	plan    *core.Plan
+	apps   []*engine.App
+	cursor int
+	offset int
+	// hideDisabled 为真时列表里只留启用的软件。默认 false：停用的要看得见 ——
+	// 以前它们被清单层直接过滤掉，用户按了空格就再也找不到那个软件了。
+	hideDisabled bool
+	detailY      int
+	plan         *core.Plan
 
 	jobs      []*jobItem
 	jobCursor int
@@ -321,10 +324,9 @@ func (m Model) loadCmd() tea.Cmd {
 // 漏一处 —— 漏掉的那处就是「点了没反应」。ids 为 nil 表示全查。
 func (m *Model) startCheck(label string, ids []string) tea.Cmd {
 	if ids == nil {
-		ids = make([]string, 0, len(m.apps))
-		for _, a := range m.apps {
-			ids = append(ids, a.Ref.ID)
-		}
+		// 只数真正会被查的软件：停用的软件不会发检查事件，把它们算进总数
+		// 会让进度永远差几个。
+		ids = m.checkableIDs()
 	}
 	m.loading = true
 	m.loadLabel = label
@@ -846,6 +848,10 @@ func (m Model) updateOverview(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "p", "enter":
 		if a := m.current(); a != nil {
+			if !appEnabled(a, m.ctrl) {
+				m.setStatus(a.Ref.DisplayName() + " 已停用：按空格启用后再生成计划")
+				return m, nil
+			}
 			m.busy = true
 			return m, m.planCmd(a.Ref.ID)
 		}
@@ -861,6 +867,16 @@ func (m Model) updateOverview(key string) (tea.Model, tea.Cmd) {
 		}
 		m.setStatus("已更新启用状态")
 		return m, m.startCheck("正在检查上游版本", nil)
+	case "h":
+		// 筛选：停用的默认显示（看得出自己停用过什么），列表太长时按 h 收起来。
+		m.hideDisabled = !m.hideDisabled
+		m.clampCursor()
+		if m.hideDisabled {
+			m.setStatus(fmt.Sprintf("已隐藏 %d 个停用的软件（再按 h 显示）", m.hiddenDisabled()))
+		} else {
+			m.setStatus("已显示全部软件")
+		}
+		return m, nil
 	case "x":
 		if a := m.current(); a != nil {
 			id, name := a.Ref.ID, a.Ref.DisplayName()
@@ -893,6 +909,11 @@ func (m Model) updateOverview(key string) (tea.Model, tea.Cmd) {
 func (m Model) applyOne(a *engine.App) (tea.Model, tea.Cmd) {
 	if a.Shadowed {
 		m.setStatusErr(fmt.Errorf("已被其它条目取代，不会更新：%s", a.Note))
+		return m, nil
+	}
+	if !appEnabled(a, m.ctrl) {
+		// 在按下去的那一刻就说清楚，而不是等引擎报错（那时用户已经点过确认框）。
+		m.setStatus(fmt.Sprintf("%s 已停用：按空格启用后再更新", a.Ref.DisplayName()))
 		return m, nil
 	}
 	switch a.Action {
@@ -1015,19 +1036,62 @@ func (m Model) handlePromptKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // ── 工具 ──────────────────────────────────────────────────────
 
+// shown 返回当前该显示的软件。
+//
+// 默认连停用的一起显示 —— 用户要能看见自己停用了什么、再按空格启回来。
+// 按 h 可以只留启用的（列表太长时用）。
+func (m Model) shown() []*engine.App {
+	if !m.hideDisabled {
+		return m.apps
+	}
+	out := make([]*engine.App, 0, len(m.apps))
+	for _, a := range m.apps {
+		if appEnabled(a, m.ctrl) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// hiddenDisabled 返回被筛选藏起来的停用软件数量。
+func (m Model) hiddenDisabled() int {
+	if !m.hideDisabled {
+		return 0
+	}
+	n := 0
+	for _, a := range m.apps {
+		if !appEnabled(a, m.ctrl) {
+			n++
+		}
+	}
+	return n
+}
+
+// checkableIDs 返回会被真正检查的软件：停用的不发检查事件，不该算进进度。
+func (m Model) checkableIDs() []string {
+	ids := make([]string, 0, len(m.apps))
+	for _, a := range m.apps {
+		if appEnabled(a, m.ctrl) {
+			ids = append(ids, a.Ref.ID)
+		}
+	}
+	return ids
+}
+
 func (m Model) current() *engine.App {
-	if m.cursor < 0 || m.cursor >= len(m.apps) {
+	shown := m.shown()
+	if m.cursor < 0 || m.cursor >= len(shown) {
 		return nil
 	}
-	return m.apps[m.cursor]
+	return shown[m.cursor]
 }
 
 func (m *Model) clampCursor() {
 	if m.cursor < 0 {
 		m.cursor = 0
 	}
-	if m.cursor >= len(m.apps) {
-		m.cursor = len(m.apps) - 1
+	if shown := m.shown(); m.cursor >= len(shown) {
+		m.cursor = len(shown) - 1
 	}
 	if m.cursor < 0 {
 		m.cursor = 0
@@ -1064,7 +1128,7 @@ func (m Model) listHeight() int {
 func (m Model) pendingIDs() []string {
 	var ids []string
 	for _, a := range m.apps {
-		if a.Shadowed {
+		if a.Shadowed || !appEnabled(a, m.ctrl) {
 			continue
 		}
 		if a.Action == core.ActionInstall || a.Action == core.ActionUpdate {
@@ -1080,8 +1144,18 @@ func (m Model) spinnerText() string {
 }
 
 // appEnabled 报告某个软件是否启用（清单里没有该条目时视为启用）。
+// appEnabled 报告某个软件是否启用。
+//
+// 先看 AppRef 上的标记（清单展开时写下的，是权威），再回落到控制层查清单 ——
+// 后者是为了兼容「由测试或别处直接构造、没经过 Build」的 App。
 func appEnabled(a *engine.App, ctrl *control.Controller) bool {
-	if a == nil || ctrl == nil {
+	if a == nil {
+		return true
+	}
+	if a.Ref.Disabled {
+		return false
+	}
+	if ctrl == nil {
 		return true
 	}
 	return ctrl.AppEnabled(a.Ref.ID)

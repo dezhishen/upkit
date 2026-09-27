@@ -37,6 +37,9 @@ func (e *Engine) Plan(ctx context.Context, id string) (*core.Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	if a.Ref.Disabled {
+		return nil, fmt.Errorf("%w: %s 在清单里被停用，先在概览里按空格启用", core.ErrDisabled, id)
+	}
 	if a.Action == core.ActionNoOp {
 		return &core.Plan{App: a.Ref, Action: core.ActionNoOp, From: a.Status.Version, To: a.Release.Version,
 			Note: a.Note}, nil
@@ -75,6 +78,9 @@ func (e *Engine) Apply(ctx context.Context, id string) (*core.Result, error) {
 	a, err := e.ensure(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if a.Ref.Disabled {
+		return nil, fmt.Errorf("%w: %s 在清单里被停用，先在概览里按空格启用", core.ErrDisabled, id)
 	}
 	if a.Action == core.ActionNoOp {
 		return &core.Result{Action: core.ActionNoOp, From: a.Status.Version, To: a.Release.Version,
@@ -222,6 +228,11 @@ func (e *Engine) ApplyMany(ctx context.Context, ids []string, concurrency int) [
 			continue
 		}
 		seen[id] = true
+		// 停用的软件直接跳过：不建任务、不报错。批量更新时它是「不参与」，
+		// 不是「失败」——把它们算成失败只会让一次正常的批量更新看起来出错。
+		if a := e.Find(id); a != nil && a.Ref.Disabled {
+			continue
+		}
 		uniq = append(uniq, id)
 	}
 

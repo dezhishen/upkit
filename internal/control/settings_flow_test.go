@@ -292,3 +292,48 @@ func TestSaveAndResetPropagateInstallRoot(t *testing.T) {
 		t.Fatalf("恢复默认后安装根目录应回到 %q，实际 %q", want, got)
 	}
 }
+
+// 强制安装根目录：设置里能改，保存后要立刻推给清单层（否则界面显示改了、
+// 下次检查仍按插件声明的老路径）。
+func TestForceInstallRootSetting(t *testing.T) {
+	ctrl := newSettingsTestController(t)
+
+	var item *SettingItem
+	for _, it := range ctrl.SettingsForm() {
+		if it.Key == "storage.force_install_root" {
+			copied := it
+			item = &copied
+		}
+	}
+	if item == nil {
+		t.Fatal("设置面板里应有「全部装到安装根目录下」这一项")
+	}
+	if item.Kind != SettingBool || item.Group != "存储与位置" {
+		t.Fatalf("这一项应是与安装根目录同组的开关：%+v", item)
+	}
+
+	if ctrl.afs.ForceInstallRoot {
+		t.Fatal("默认不该强制")
+	}
+	if err := ctrl.AdjustSetting("storage.force_install_root", 1); err != nil {
+		t.Fatalf("AdjustSetting: %v", err)
+	}
+	if !ctrl.Settings().Storage.ForceInstallRoot {
+		t.Fatal("开关没打开")
+	}
+	if err := ctrl.SaveSettings(); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+	if !ctrl.afs.ForceInstallRoot {
+		t.Fatal("保存后应推给清单层：插件声明的路径才会被忽略")
+	}
+
+	// 落盘后能读回来。
+	reloaded, err := settings.Load(ctrl.Settings().Path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reloaded.Storage.ForceInstallRoot {
+		t.Fatal("开关没落盘")
+	}
+}

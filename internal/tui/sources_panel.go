@@ -200,15 +200,34 @@ func (m Model) viewSources(w, height int) string {
 	return m.theme.Frame("来源", strings.TrimRight(b.String(), "\n"), w, height, true)
 }
 
+// subscription 按地址取一条订阅记录（列表与订阅详情都要显示它的启停状态）。
+func (m Model) subscription(url string) (pluginfeed.Subscription, bool) {
+	if m.ctrl == nil {
+		return pluginfeed.Subscription{}, false
+	}
+	for _, sub := range m.ctrl.Subscriptions() {
+		if sub.URL == url {
+			return sub, true
+		}
+	}
+	return pluginfeed.Subscription{}, false
+}
+
 func (m Model) sourceLine(i int, r sourceRow) string {
 	cur := m.theme.Cursor(i == m.srcCursor)
 	if r.isSubscription {
-		state, style := "已记录", m.theme.Dim()
-		if r.sub.LastError != "" {
-			state, style = "上次拉取失败", m.theme.Warn()
+		// 订阅也有启用/停用（停用的订阅不参与拉取）。以前这里永远显示「已记录」，
+		// 于是按了空格也不知道到底生效没有 —— 状态必须看得见。
+		state, style := "已启用", m.theme.OK()
+		if !r.sub.EnabledValue() {
+			state, style = "已停用", m.theme.Dim()
 		}
-		return fmt.Sprintf("%s%s %s  %s", cur, m.theme.Dim().Render("*"),
+		line := fmt.Sprintf("%s%s %s  %s", cur, m.theme.Dim().Render("*"),
 			m.theme.Primary().Render(r.sub.URL), style.Render(state))
+		if r.sub.LastError != "" {
+			line += "  " + m.theme.Warn().Render("上次拉取失败")
+		}
+		return line
 	}
 
 	name := r.info.Name

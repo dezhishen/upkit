@@ -87,7 +87,18 @@ type Storage struct {
 	//
 	// 留空表示跟随根目录（<根目录>/apps）。与其它目录项一样：改它不会搬动已经装好
 	// 的软件 —— 那些软件的落点在清单里，检测也按那份清单。
-	InstallRoot    string `yaml:"install_root"`
+	InstallRoot string `yaml:"install_root"`
+	// ForceInstallRoot 为真时，所有由 upkit 自己落地的软件（portable-inplace）
+	// 一律装到 <安装根目录>/<软件名>，**忽略插件声明的目录**。
+	//
+	// 存在的理由：插件可能写死 ${LOCALAPPDATA}/… 之类的路径，用户想「全部装到
+	// 一个盘下的一个目录」就无从下手。默认关 —— 打开后已装在别处的软件会被看作
+	// 「未安装」，需要在安装根目录下重新落地一次。
+	//
+	// 由安装器/插件自己决定落点的方法（exe-installer / msiexec / plugin）
+	// 不受影响：那些路径只是「去哪找它」，强行改会連探测都找不到。
+	ForceInstallRoot bool `yaml:"force_install_root"`
+
 	DataDir        string `yaml:"data_dir"`
 	CacheDir       string `yaml:"cache_dir"`
 	TempDir        string `yaml:"temp_dir"`

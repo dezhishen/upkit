@@ -144,6 +144,13 @@ var settingCatalog = []settingDef{
 		getStr: func(s *settings.Settings) string { return s.Storage.InstallRoot },
 		setStr: func(s *settings.Settings, v string) { s.Storage.InstallRoot = v }},
 
+	{key: "storage.force_install_root", label: "全部装到安装根目录下", kind: SettingBool,
+		hint: "插件可能把目录写死在自己的位置（如 %LOCALAPPDATA%\\…）；\\n" +
+			"打开这项后，upkit 自己落地的软件一律装到上面那个根目录下。\\n" +
+			"只对 portable 方式生效：由安装器/插件决定位置的不受控",
+		getBool: func(s *settings.Settings) bool { return s.Storage.ForceInstallRoot },
+		setBool: func(s *settings.Settings, v bool) { s.Storage.ForceInstallRoot = v }},
+
 	{key: "storage.data_dir", label: "数据目录", dirName: settings.DirData,
 		getStr: func(s *settings.Settings) string { return s.Storage.DataDir },
 		setStr: func(s *settings.Settings, v string) { s.Storage.DataDir = v }},
@@ -407,6 +414,7 @@ func (c *Controller) applyInstallRoot() {
 		return
 	}
 	c.afs.SetInstallRoot(c.set.InstallRootDir())
+	c.afs.SetForceInstallRoot(c.set.Storage.ForceInstallRoot)
 }
 
 // ResetSettings 恢复内置默认值（保留设置文件路径），并标记为待保存。

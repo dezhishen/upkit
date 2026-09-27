@@ -154,10 +154,14 @@ func (m Model) counts() string {
 		// 右上角也报进度：列表已经出来了，用户最容易盯着这一带看。
 		return fmt.Sprintf("检查中 %d/%d", m.checkTotal-len(m.checkLeft), m.checkTotal)
 	}
-	var upd, inst, pend int
+	var upd, inst, pend, off int
 	for _, a := range m.apps {
 		if a.Status.Installed {
 			inst++
+		}
+		if !appEnabled(a, m.ctrl) {
+			off++
+			continue
 		}
 		switch a.Action {
 		case core.ActionUpdate:
@@ -166,7 +170,12 @@ func (m Model) counts() string {
 			pend++
 		}
 	}
-	return fmt.Sprintf("已安装 %d · 可更新 %d · 待安装 %d", inst, upd, pend)
+	line := fmt.Sprintf("已安装 %d · 可更新 %d · 待安装 %d", inst, upd, pend)
+	if off > 0 {
+		// 停用的软件也看得见，计数就得提一句，否则用户对不上数。
+		line += fmt.Sprintf(" · 停用 %d", off)
+	}
+	return line
 }
 
 func (m Model) viewBody(w, height int) string {
@@ -214,15 +223,16 @@ func (m Model) viewOverview(w, height int) string {
 	}
 
 	rows := make([][]string, 0, len(m.apps))
+	shown := m.shown()
 	nameMax, noteMax := textBudget(w - 4)
-	for i, a := range m.apps {
+	for i, a := range shown {
 		rows = append(rows, m.overviewRow(i, a, nameMax, noteMax))
 	}
 
 	tbl := m.newTable().
 		Headers(" ", "软件", "状态", "本地版本", "上游版本", "说明").
 		Rows(rows...).
-		StyleFunc(m.overviewStyle).
+		StyleFunc(m.overviewStyle(shown)).
 		Width(w - 4).
 		Height(height - 2).
 		YOffset(m.offset).
@@ -237,7 +247,10 @@ func (m Model) viewOverview(w, height int) string {
 func (m Model) overviewRow(i int, a *engine.App, nameMax, noteMax int) []string {
 	name := a.Ref.DisplayName()
 	if !appEnabled(a, m.ctrl) {
-		name += "（停用）"
+		// 标记要留在名字里，所以先按「名字 + 标记」的总预算截名字 ——
+		// 直接拼上去会被列宽截掉尾巴，变成「（停…」。
+		const marker = "（停用）"
+		name = Truncate(name, nameMax-Width(marker)) + marker
 	}
 	note := a.Note
 	switch {
@@ -266,34 +279,38 @@ func (m Model) overviewRow(i int, a *engine.App, nameMax, noteMax int) []string 
 //
 // 不再整行染色：一屏里多个「可更新」会把橙黄变成背景噪声，颜色随之失去区分度。
 // 颜色只落在状态列与出错行上，正文保持中性，靠选中底色指示当前位置。
-func (m Model) overviewStyle(row, col int) lipgloss.Style {
-	if col == colCursor {
-		if row != tableHeaderRow && row == m.cursor {
-			return cursorCell(m.theme.SelectedRow())
+//
+// shown 是本次渲染用的可见列表（按 h 筛选过），与行下标一一对应。
+func (m Model) overviewStyle(shown []*engine.App) func(row, col int) lipgloss.Style {
+	return func(row, col int) lipgloss.Style {
+		if col == colCursor {
+			if row != tableHeaderRow && row == m.cursor {
+				return cursorCell(m.theme.SelectedRow())
+			}
+			return cursorCell(lipgloss.NewStyle())
 		}
-		return cursorCell(lipgloss.NewStyle())
-	}
-	if row == tableHeaderRow {
-		return m.tableCell(m.theme.Header())
-	}
-	if row < 0 || row >= len(m.apps) {
+		if row == tableHeaderRow {
+			return m.tableCell(m.theme.Header())
+		}
+		if row < 0 || row >= len(shown) {
+			return m.tableCell(lipgloss.NewStyle())
+		}
+		if row == m.cursor {
+			// 内边距一并染上底色，高亮才是完整色块（漏掉内边距会让首列贴上光标符）。
+			return m.tableCell(m.theme.SelectedRow())
+		}
+		a := shown[row]
+		if !appEnabled(a, m.ctrl) || a.Shadowed {
+			return m.tableCell(m.theme.Dim())
+		}
+		switch {
+		case a.CheckErr != nil && col == colNote:
+			return m.tableCell(m.theme.Err())
+		case col == colState && a.Action != core.ActionNoOp:
+			return m.tableCell(m.theme.Warn())
+		}
 		return m.tableCell(lipgloss.NewStyle())
 	}
-	if row == m.cursor {
-		// 内边距一并染上底色，高亮才是完整色块（漏掉内边距会让首列贴上光标符）。
-		return m.tableCell(m.theme.SelectedRow())
-	}
-	a := m.apps[row]
-	if !appEnabled(a, m.ctrl) || a.Shadowed {
-		return m.tableCell(m.theme.Dim())
-	}
-	switch {
-	case a.CheckErr != nil && col == colNote:
-		return m.tableCell(m.theme.Err())
-	case col == colState && a.Action != core.ActionNoOp:
-		return m.tableCell(m.theme.Warn())
-	}
-	return m.tableCell(lipgloss.NewStyle())
 }
 
 func actionLabel(a *engine.App) string {

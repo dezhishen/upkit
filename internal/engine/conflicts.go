@@ -47,6 +47,11 @@ func normalizeConflicts(list []*App, file *apps.File) {
 	seenFuzzy := map[string]*App{}
 
 	for _, a := range list {
+		// 停用的软件不参与冲突判定：它既不会去占用路径、也不该把在用的那个
+		// 软件标成「冲突」。它自己在列表里显示为灰色的「（停用）」就够了。
+		if a.Ref.Disabled {
+			continue
+		}
 		// 1) 同 id
 		if prev, dup := seenID[a.Ref.ID]; dup {
 			markShadow(a, Conflict{

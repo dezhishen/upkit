@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dezhishen/upkit/internal/core"
 	"github.com/dezhishen/upkit/internal/settings"
 )
 
@@ -287,5 +288,91 @@ func TestDefaultInstallRootNameMatchesSettings(t *testing.T) {
 	if DefaultInstallRootName != settings.DirApps {
 		t.Fatalf("默认安装子目录名不一致：apps=%q settings=%q",
 			DefaultInstallRootName, settings.DirApps)
+	}
+}
+
+// 强制安装根目录：插件把目录写死在别处时，用户仍能要求「全部装到一个目录下」。
+//
+// 官方订阅里就有这种声明：`${LOCALAPPDATA}/UngoogledChromium` —— 它不受安装根目录
+// 影响，于是「我想让所有软件都在 C:\apps 下面」根本做不到。
+func TestForceInstallRootOverridesPortablePath(t *testing.T) {
+	root := t.TempDir()
+	f := Default(WithInstallRoot(root), WithForceInstallRoot(true))
+	f.Apps = []AppSpec{{
+		ID: "ungoogled-chromium", Name: "Ungoogled Chromium",
+		Source:  map[string]any{"kind": "github-release", "repo": "o/r"},
+		Method:  map[string]any{"kind": "portable-inplace"},
+		Install: InstallSpec{Path: filepath.Join(root, "别处", "Chromium")},
+	}}
+
+	refs, err := f.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// 目录名按文件名规则清洗（空格换成下划线），和「没写安装路径」时的兜底一致。
+	want := filepath.Join(root, "Ungoogled_Chromium")
+	if refs[0].InstallPath != want {
+		t.Fatalf("强制根目录后应装到 %q，实际 %q", want, refs[0].InstallPath)
+	}
+
+	// 关掉开关就回到插件声明的路径。
+	f.SetForceInstallRoot(false)
+	refs, err = f.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if refs[0].InstallPath != filepath.Join(root, "别处", "Chromium") {
+		t.Fatalf("关掉开关后应恢复声明路径，实际 %q", refs[0].InstallPath)
+	}
+}
+
+// 由安装器/插件决定落点的方法不受强制根目录影响：那里的路径是「去哪找它」，
+// 改成我们的目录只会让探测永远找不到。
+func TestForceInstallRootLeavesInstallerMethods(t *testing.T) {
+	root := t.TempDir()
+	declared := filepath.Join(root, "按安装器自己的规矩")
+	for _, method := range []string{"msiexec", "exe-installer", "plugin"} {
+		f := Default(WithInstallRoot(root), WithForceInstallRoot(true))
+		f.Apps = []AppSpec{{
+			ID: "x", Name: "X",
+			Method:  map[string]any{"kind": method},
+			Install: InstallSpec{Path: declared},
+		}}
+		refs, err := f.Build()
+		if err != nil {
+			t.Fatalf("Build(%s): %v", method, err)
+		}
+		if refs[0].InstallPath != declared {
+			t.Fatalf("%s 的落点不该被强制改写：%q", method, refs[0].InstallPath)
+		}
+	}
+}
+
+// 停用的软件照样展开，并且带上标记：界面要能显示它、再启回来。
+func TestBuildKeepsDisabledAppsMarked(t *testing.T) {
+	root := t.TempDir()
+	off := false
+	f := Default(WithInstallRoot(root))
+	f.Apps = []AppSpec{
+		{ID: "on", Name: "On", Enabled: nil},
+		{ID: "off", Name: "Off", Enabled: &off},
+	}
+
+	refs, err := f.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(refs) != 2 {
+		t.Fatalf("停用的软件也该展开（用户要能看见它）：%+v", refs)
+	}
+	byID := map[string]core.AppRef{}
+	for _, r := range refs {
+		byID[r.ID] = r
+	}
+	if byID["on"].Disabled {
+		t.Fatal("启用的软件不该带停用标记")
+	}
+	if !byID["off"].Disabled {
+		t.Fatal("停用的软件应带停用标记")
 	}
 }

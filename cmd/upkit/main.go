@@ -233,7 +233,9 @@ func run(opts optionSet) error {
 // loadApps 读取软件清单。
 func loadApps(set *settings.Settings) (*apps.File, error) {
 	// 安装根目录要交给清单层：插件声明的 ${ROOT} 与「没写安装路径的软件」的落点都取自它。
-	return apps.Load(set.AppsPath(), apps.WithInstallRoot(set.InstallRootDir()))
+	return apps.Load(set.AppsPath(),
+		apps.WithInstallRoot(set.InstallRootDir()),
+		apps.WithForceInstallRoot(set.Storage.ForceInstallRoot))
 }
 
 // logSourceStates 把每个插件来源的结局写进日志（未信任的会把哈希打出来，方便启用）。

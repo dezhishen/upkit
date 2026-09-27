@@ -25,10 +25,17 @@ type action struct {
 func (m Model) actions() []action {
 	switch m.tab {
 	case tabOverview:
-		return []action{
+		acts := []action{
 			{"c", "检查"}, {"u", "更新"}, {"p", "计划"},
 			{"space", "启用/停用"}, {"R", "回滚"}, {"x", "卸载"},
 		}
+		// 筛选按钮的文案随状态变：写「隐藏停用」时点它才是隐藏，别让用户猜。
+		if m.hideDisabled {
+			acts = append(acts, action{"h", "显示停用"})
+		} else {
+			acts = append(acts, action{"h", "隐藏停用"})
+		}
+		return acts
 	case tabDetail:
 		return []action{
 			{"p", "计划"}, {"u", "更新"}, {"R", "回滚"}, {"esc", "返回"},

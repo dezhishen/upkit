@@ -146,6 +146,11 @@ func (m Model) viewFeedDetail(w, height int) string {
 	var b strings.Builder
 	b.WriteString(m.theme.Dim().Render("订阅："))
 	b.WriteString(m.theme.Primary().Render(m.feedFor))
+	if sub, ok := m.subscription(m.feedFor); ok && !sub.EnabledValue() {
+		// 停用的订阅依旧可以打开看（里面的插件还能装，只是不参与拉取），
+		// 但得说清楚——否则从这里看不到外面那行的状态。
+		b.WriteString("  " + m.theme.Dim().Render("（已停用：不参与拉取）"))
+	}
 	b.WriteString("\n\n")
 
 	switch {

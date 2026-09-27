@@ -28,6 +28,11 @@ type AppRef struct {
 	Processes   []string
 	Preserve    []string
 
+	// Disabled 表示清单里被停用：不参与检查和更新，但**仍要出现在列表里** ——
+	// 界面把它显示成灰色的「（停用）」，用户按空格就能再启用。
+	// 用反义字段是为了让零值等于「启用」：新增构造点漏填不会让软件凭空停用。
+	Disabled bool
+
 	Pin           string // 固定版本，非空则忽略上游最新
 	TrackRevision bool
 	Tags          []string
