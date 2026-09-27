@@ -99,6 +99,11 @@ var settingCatalog = []settingDef{
 		getInt: func(s *settings.Settings) int { return s.Engine.ApplyConcurrency },
 		setInt: func(s *settings.Settings, v int) { s.Engine.ApplyConcurrency = v }},
 
+	{key: "storage.install_root", label: "软件安装根目录", dirName: settings.DirApps,
+		hint:   "绝对路径；留空 = 跟随根目录（<根目录>/apps）。插件里写的 ${ROOT} 指这里，没写明安装路径的软件也装到这里",
+		getStr: func(s *settings.Settings) string { return s.Storage.InstallRoot },
+		setStr: func(s *settings.Settings, v string) { s.Storage.InstallRoot = v }},
+
 	{key: "storage.data_dir", label: "数据目录", dirName: settings.DirData,
 		getStr: func(s *settings.Settings) string { return s.Storage.DataDir },
 		setStr: func(s *settings.Settings, v string) { s.Storage.DataDir = v }},
@@ -224,7 +229,9 @@ func init() {
 			continue
 		}
 		def.kind = SettingText
-		def.hint = "绝对路径；留空 = 跟随根目录（<根目录>/" + def.dirName + "）"
+		if def.hint == "" {
+			def.hint = "绝对路径；留空 = 跟随根目录（<根目录>/" + def.dirName + "）"
+		}
 	}
 }
 
@@ -340,8 +347,20 @@ func (c *Controller) SaveSettings() error {
 	if err := c.set.Save(); err != nil {
 		return err
 	}
+	c.applyInstallRoot()
 	c.settingsDirty = false
 	return nil
+}
+
+// applyInstallRoot 把设置里的安装根目录同步给清单层。
+//
+// 清单层不认识 settings，所以由这里推过去：插件声明的 ${ROOT} 与「没写明安装路径的
+// 软件」的落点都取自它，保存后不推的话，界面里改了位置、下一次检查还用旧值。
+func (c *Controller) applyInstallRoot() {
+	if c.afs == nil || c.set == nil {
+		return
+	}
+	c.afs.SetInstallRoot(c.set.InstallRootDir())
 }
 
 // ResetSettings 恢复内置默认值（保留设置文件路径），并标记为待保存。
@@ -355,6 +374,7 @@ func (c *Controller) ResetSettings() error {
 		return err
 	}
 	*c.set = *def
+	c.applyInstallRoot()
 	c.settingsDirty = true
 	return nil
 }

@@ -160,7 +160,7 @@ func (c *Controller) ReloadSources(ctx context.Context) error {
 	}
 	if c.afs.Path != "" {
 		if _, err := os.Stat(c.afs.Path); err == nil {
-			fresh, err := apps.Load(c.afs.Path)
+			fresh, err := apps.Load(c.afs.Path, apps.WithInstallRoot(c.afs.InstallRoot))
 			if err != nil {
 				return fmt.Errorf("重读清单: %w", err)
 			}

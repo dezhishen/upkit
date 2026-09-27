@@ -3,8 +3,11 @@ package apps
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/dezhishen/upkit/internal/settings"
 )
 
 func writeFile(t *testing.T, path, content string) {
@@ -198,5 +201,91 @@ func TestAppsFieldIsNotSerialized(t *testing.T) {
 	}
 	if strings.Contains(string(data), "demo") {
 		t.Fatalf("运行时软件条目不应落盘，实际写入：\n%s", data)
+	}
+}
+
+// ${ROOT} 必须展开成传入的安装根目录。
+//
+// 这是真实缺陷的回归：宿主此前只做 ExpandPath（os.ExpandEnv），而 ROOT 不是环境变量，
+// 于是插件写的 "${ROOT}/fzf" 被展开成空串拼出来的 "\fzf" —— 软件装到了当前盘的根
+// 目录，而不是用户设定的位置，而 SDK 文档一直声称支持 ${ROOT}。
+func TestInstallPathExpandsRootVar(t *testing.T) {
+	root := t.TempDir()
+	f := Default(WithInstallRoot(root))
+	f.Apps = []AppSpec{{
+		ID:      "fzf",
+		Name:    "fzf",
+		Install: InstallSpec{Path: "${ROOT}/fzf"},
+	}}
+
+	refs, err := f.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if want := filepath.Join(root, "fzf"); refs[0].InstallPath != want {
+		t.Fatalf("${ROOT} 未展开成安装根目录：%q != %q", refs[0].InstallPath, want)
+	}
+}
+
+// ${ARCH} 展开成当前平台架构；写死了绝对路径的条目不受安装根目录影响。
+func TestInstallPathExpandsArchAndKeepsAbsolute(t *testing.T) {
+	root := t.TempDir()
+	abs := filepath.Join(t.TempDir(), "Fixed")
+	f := Default(WithInstallRoot(root))
+	f.Apps = []AppSpec{
+		{ID: "arch", Name: "Arch", Install: InstallSpec{Path: "${ROOT}/${ARCH}/tool"}},
+		{ID: "fixed", Name: "Fixed", Install: InstallSpec{Path: abs}},
+	}
+
+	refs, err := f.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if want := filepath.Join(root, runtime.GOARCH, "tool"); refs[0].InstallPath != want {
+		t.Fatalf("${ARCH} 未展开：%q != %q", refs[0].InstallPath, want)
+	}
+	if refs[1].InstallPath != abs {
+		t.Fatalf("写死的路径不该被改：%q != %q", refs[1].InstallPath, abs)
+	}
+}
+
+// 没写明安装路径的软件落到 <安装根目录>/<软件名>；没有根目录时仍然报错（不猜位置）。
+func TestInstallPathFallsBackToInstallRoot(t *testing.T) {
+	root := t.TempDir()
+	f := Default(WithInstallRoot(root))
+	f.Apps = []AppSpec{{ID: "corp/vpn", Name: "Corp VPN"}}
+
+	refs, err := f.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if want := filepath.Join(root, "Corp_VPN"); refs[0].InstallPath != want {
+		t.Fatalf("未写明路径时应落到 %q，实际 %q", want, refs[0].InstallPath)
+	}
+
+	// 名字为空时退回 ID（限定 ID 里的斜杠会被清洗掉，不能当成子目录）。
+	f2 := Default(WithInstallRoot(root))
+	f2.Apps = []AppSpec{{ID: "corp/vpn"}}
+	refs2, err := f2.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if want := filepath.Join(root, "corp_vpn"); refs2[0].InstallPath != want {
+		t.Fatalf("无名字时应落到 %q，实际 %q", want, refs2[0].InstallPath)
+	}
+
+	// 没有安装根目录 = 不猜：还是报缺少 install.path。
+	f3 := Default()
+	f3.Apps = []AppSpec{{ID: "no-path", Name: "NoPath"}}
+	if _, err := f3.Build(); err == nil || !strings.Contains(err.Error(), "install.path") {
+		t.Fatalf("没有安装根目录时应报缺少 install.path，实际 %v", err)
+	}
+}
+
+// apps 包不知道 settings，两边的默认子目录名必须一致（这里钉住）。
+func TestDefaultInstallRootNameMatchesSettings(t *testing.T) {
+	if DefaultInstallRootName != settings.DirApps {
+		t.Fatalf("默认安装子目录名不一致：apps=%q settings=%q",
+			DefaultInstallRootName, settings.DirApps)
 	}
 }

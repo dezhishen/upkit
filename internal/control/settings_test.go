@@ -217,3 +217,37 @@ func TestResetSettingsRestoresDirDefaults(t *testing.T) {
 		t.Fatalf("恢复默认后应为 %q，实际 %q", want, got)
 	}
 }
+
+// 保存设置后，安装根目录要同步到清单层。
+//
+// 清单层（apps）不认识 settings，插件声明的 ${ROOT} 与「没写明安装路径的软件」的落点
+// 都取自推过去的那份值；不推的话，界面里改了位置，下一次检查仍然用旧值。
+func TestSaveSettingsPropagatesInstallRoot(t *testing.T) {
+	ctrl := newSettingsTestController(t)
+	custom := filepath.Join(t.TempDir(), "Apps")
+
+	if err := ctrl.SetSetting("storage.install_root", custom); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	if err := ctrl.SaveSettings(); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+
+	// 没有写明安装路径的软件，现在应落到新的安装根目录下。
+	ctrl.afs.Apps = []apps.AppSpec{{ID: "corp/vpn", Name: "Corp VPN"}}
+	refs, err := ctrl.afs.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if want := filepath.Join(custom, "Corp_VPN"); refs[0].InstallPath != want {
+		t.Fatalf("安装根目录未同步给清单层：%q != %q", refs[0].InstallPath, want)
+	}
+
+	// 恢复默认后应回到 <根目录>/apps。
+	if err := ctrl.ResetSettings(); err != nil {
+		t.Fatalf("ResetSettings: %v", err)
+	}
+	if got := ctrl.set.InstallRootDir(); got == custom {
+		t.Fatalf("恢复默认后安装根目录不该还是 %q", custom)
+	}
+}

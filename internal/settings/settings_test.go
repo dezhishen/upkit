@@ -378,3 +378,50 @@ func TestSaveKeepsLayoutPortable(t *testing.T) {
 		t.Fatalf("自定义缓存目录应保留，实际 %s", got.Storage.CacheDir)
 	}
 }
+
+// 安装根目录：留空跟随 <根目录>/apps，落盘时清空，读回来还是同一个位置。
+//
+// 插件里写的 ${ROOT} 就指它 —— 所以它必须在 Normalize 之后永远是可用的绝对路径，
+// 不能停在空串上（那样清单里会退化成 "\\fzf" 这类怪路径）。
+func TestInstallRootDir(t *testing.T) {
+	root := t.TempDir()
+	s := Default()
+	s.Path = filepath.Join(root, DirConfig, FileName)
+	if err := s.Normalize(); err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	want := filepath.Join(root, DirApps)
+	if s.Storage.InstallRoot != want || s.InstallRootDir() != want {
+		t.Fatalf("默认安装根目录应为 %q，实际 %q / %q",
+			want, s.Storage.InstallRoot, s.InstallRootDir())
+	}
+
+	custom := filepath.Join(t.TempDir(), "Apps")
+	s.Storage.InstallRoot = custom
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(s.Path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.InstallRootDir() != custom {
+		t.Fatalf("自定义安装根目录未落盘：%q", got.InstallRootDir())
+	}
+
+	// 改回默认值时应写空，跟着根目录走。
+	got.Storage.InstallRoot = want
+	if err := got.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(got.Path)
+	if err != nil {
+		t.Fatalf("读取设置文件: %v", err)
+	}
+	if !strings.Contains(string(raw), `install_root: ""`) {
+		t.Fatalf("跟随根目录时字段应为空，实际内容:\n%s", raw)
+	}
+	if again, err := Load(got.Path); err != nil || again.InstallRootDir() != want {
+		t.Fatalf("重新加载后应回到 %q，实际 %v（err=%v）", want, again.InstallRootDir(), err)
+	}
+}

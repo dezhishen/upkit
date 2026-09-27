@@ -53,6 +53,8 @@ const (
 	DirCache  = "cache"
 	DirBackup = "backup"
 	DirTemp   = "temp"
+	// DirApps 是软件默认安装目录名（<根目录>/apps）。
+	DirApps = "apps"
 )
 
 // Settings 是全部可配置项。
@@ -80,6 +82,12 @@ type Network struct {
 
 // Storage 是目录与容量相关设置。
 type Storage struct {
+	// InstallRoot 是「软件装到哪」的根目录：插件声明的 ${ROOT} 指向它，没写明安装
+	// 路径的软件也装到它下面（<安装根目录>/<软件名>）。
+	//
+	// 留空表示跟随根目录（<根目录>/apps）。与其它目录项一样：改它不会搬动已经装好
+	// 的软件 —— 那些软件的落点在清单里，检测也按那份清单。
+	InstallRoot    string `yaml:"install_root"`
 	DataDir        string `yaml:"data_dir"`
 	CacheDir       string `yaml:"cache_dir"`
 	TempDir        string `yaml:"temp_dir"`
@@ -320,6 +328,7 @@ func (s *Settings) Normalize() error {
 		s.Path = p
 	}
 	// 目录：留空表示跟随根目录。
+	s.Storage.InstallRoot = s.ExpandDir(s.Storage.InstallRoot, DirApps)
 	s.Storage.DataDir = s.ExpandDir(s.Storage.DataDir, DirData)
 	s.Storage.CacheDir = s.ExpandDir(s.Storage.CacheDir, DirCache)
 	s.Storage.TempDir = s.ExpandDir(s.Storage.TempDir, DirTemp)
@@ -423,6 +432,7 @@ func (s *Settings) snapshot() *Settings {
 			*v = ""
 		}
 	}
+	clearIfSame(&out.Storage.InstallRoot, filepath.Join(root, DirApps))
 	clearIfSame(&out.Storage.DataDir, filepath.Join(root, DirData))
 	clearIfSame(&out.Storage.CacheDir, filepath.Join(root, DirCache))
 	clearIfSame(&out.Storage.TempDir, filepath.Join(root, DirTemp))
@@ -472,6 +482,14 @@ func (s *Settings) ManifestPath() string {
 // BackupRoot 返回备份根目录。
 func (s *Settings) BackupRoot() string {
 	return s.Storage.BackupDir
+}
+
+// InstallRootDir 返回软件的安装根目录（已展开，绝不返回空串）。
+func (s *Settings) InstallRootDir() string {
+	if v := strings.TrimSpace(s.Storage.InstallRoot); v != "" {
+		return util.ExpandPath(v)
+	}
+	return filepath.Join(s.RootDir(), DirApps)
 }
 
 // BackupDir 返回某个软件的备份目录。

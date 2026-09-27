@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +20,12 @@ import (
 	"github.com/dezhishen/upkit/internal/fsutil"
 	"github.com/dezhishen/upkit/internal/util"
 )
+
+// DefaultInstallRootName 是「设置里没写安装根目录」时 ${ROOT} 用的子目录名。
+//
+// 与 settings.DirApps 同名，但 apps 包不认识 settings（那是上层的东西），这里再写一份，
+// 由测试钉住两者一致。
+const DefaultInstallRootName = "apps"
 
 // 默认值。
 var (
@@ -58,7 +66,26 @@ type File struct {
 	// Apps 由插件提供，不序列化：软件的来源只能是订阅，不能在文件里声明。
 	Apps []AppSpec `yaml:"-"`
 	Path string    `yaml:"-"`
+
+	// InstallRoot 是软件安装根目录（来自设置里的 storage.install_root）。
+	//
+	// 两个用途：展开插件声明的 ${ROOT}，以及给没写明安装路径的软件兜一个落点。
+	// 由调用方（装配时、控制层保存设置后）注入 —— apps 包不认识 settings。
+	InstallRoot string `yaml:"-"`
 }
+
+// Option 是装配清单时可选项。
+type Option func(*File)
+
+// WithInstallRoot 指定软件安装根目录。
+func WithInstallRoot(dir string) Option {
+	return func(f *File) { f.InstallRoot = strings.TrimSpace(dir) }
+}
+
+// SetInstallRoot 改安装根目录（设置改动后由控制层调用）。
+//
+// 只改下一次展开清单时用的值：已经在跑的安装不受影响，新位置在下次检查时才体现。
+func (f *File) SetInstallRoot(dir string) { f.InstallRoot = strings.TrimSpace(dir) }
 
 // SourceSpec 描述一个「软件来源」。
 //
@@ -203,15 +230,21 @@ type Equivalence struct {
 }
 
 // Default 返回带默认冲突策略的空清单。
-func Default() *File {
-	return &File{
+func Default(opts ...Option) *File {
+	f := &File{
 		Version:   2,
 		Conflicts: Conflicts{SameID: "block", SameTarget: "block", Fuzzy: "block"},
 	}
+	for _, o := range opts {
+		if o != nil {
+			o(f)
+		}
+	}
+	return f
 }
 
 // Load 读取清单；文件不存在时返回空清单（Path 指向将创建的位置）。
-func Load(path string) (*File, error) {
+func Load(path string, opts ...Option) (*File, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("apps.yaml 路径为空")
 	}
@@ -219,13 +252,13 @@ func Load(path string) (*File, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			f := Default()
+			f := Default(opts...)
 			f.Path = path
 			return f, nil
 		}
 		return nil, fmt.Errorf("读取清单 %s: %w", path, err)
 	}
-	f := Default()
+	f := Default(opts...)
 	dec := yaml.NewDecoder(strings.NewReader(string(data)))
 	dec.KnownFields(true)
 	if err := dec.Decode(f); err != nil && err != io.EOF {
@@ -305,9 +338,12 @@ func (f *File) buildOne(spec AppSpec) (core.AppRef, error) {
 	if err := validateID(id); err != nil {
 		return core.AppRef{}, err
 	}
-	path := util.ExpandPath(spec.Install.Path)
+	path := f.expandInstallPath(spec.Install.Path)
 	if path == "" {
-		return core.AppRef{}, fmt.Errorf("缺少 install.path")
+		path = f.defaultInstallPath(spec)
+	}
+	if path == "" {
+		return core.AppRef{}, fmt.Errorf("缺少 install.path（也没设置软件安装根目录）")
 	}
 
 	method, methodOpts := splitKind(spec.Method, "portable-inplace")
@@ -358,6 +394,43 @@ func (f *File) buildOne(spec AppSpec) (core.AppRef, error) {
 		TrackRevision: spec.Update.TrackRevision,
 		Tags:          spec.Tags,
 	}, nil
+}
+
+// expandInstallPath 展开安装路径里的宿主变量，再交给通用展开（环境变量、~、绝对化）。
+//
+// 插件 SDK 允许写 ${ROOT} / ${LOCALAPPDATA} / ${ARCH}，而宿主此前一个都没替换：
+// ${ROOT} 不是环境变量，os.ExpandEnv 把它变成空串，于是 "${ROOT}/fzf" 解析成 "\fzf"
+// —— 软件装到了当前盘的根目录，而不是用户设定的安装位置。
+func (f *File) expandInstallPath(p string) string {
+	if strings.TrimSpace(p) == "" {
+		return ""
+	}
+	root := strings.TrimSpace(f.InstallRoot)
+	if root == "" {
+		root = DefaultInstallRootName
+	}
+	expanded := util.ExpandVars(p, map[string]string{
+		"ROOT": root,
+		"ARCH": runtime.GOARCH,
+		"OS":   runtime.GOOS,
+	})
+	return util.ExpandPath(expanded)
+}
+
+// defaultInstallPath 给没写明安装路径的软件兜一个落点：<安装根目录>/<软件名>。
+//
+// 插件只该说明「装哪个软件」，落点归使用者决定；路径留空时以前直接报
+// 「缺少 install.path」，等于让插件作者替用户选目录。
+func (f *File) defaultInstallPath(spec AppSpec) string {
+	root := strings.TrimSpace(f.InstallRoot)
+	if root == "" {
+		return ""
+	}
+	name := strings.TrimSpace(spec.Name)
+	if name == "" {
+		name = spec.ID
+	}
+	return filepath.Join(root, util.SanitizeFileName(name))
 }
 
 // PluginRef 是插件来源里一个软件的定位：来源 ID + 插件内软件 ID。
