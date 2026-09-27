@@ -62,3 +62,27 @@ func (r *resolver) Latest(ctx context.Context, app core.AppRef) (core.Release, e
 func (r *resolver) Versions(ctx context.Context, app core.AppRef, limit int) ([]core.Release, error) {
 	return r.host.Versions(ctx, r.sourceID, r.appID, limit)
 }
+
+// ExpectedDigest 实现 core.Verifier。
+//
+// 插件在 Versions 里给出的 Artifact.Digest 就是上游摘要（官方源的插件从二进制索引站
+// 或 GitHub API 取，都是 sha256）。之前这里没有实现，结果是插件来源的摘要只显示在
+// 界面上、下载后并不校验 —— 等于「插件被信任了，它给的字节没人验」。
+//
+// 返回空串表示没有摘要可用，引擎会跳过校验（而不是报错）：摘要可选，与
+// githubrelease 一样的口径。
+func (r *resolver) ExpectedDigest(_ context.Context, _ core.AppRef, art core.Artifact) (string, error) {
+	return sumFromDigest(art.Digest), nil
+}
+
+// sumFromDigest 去掉可选的算法前缀并转小写；空值表示没有摘要。
+//
+// 与 internal/source/githubrelease 里的同名函数同一口径（那边是私有的，这里保持
+// 一致以免两边对「sha256:」前缀的处理出现偏差）。
+func sumFromDigest(d string) string {
+	d = strings.TrimSpace(d)
+	if i := strings.Index(d, ":"); i >= 0 && !strings.Contains(d[:i], " ") {
+		d = d[i+1:]
+	}
+	return strings.ToLower(strings.TrimSpace(d))
+}

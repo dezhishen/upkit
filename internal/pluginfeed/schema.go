@@ -1,7 +1,10 @@
 package pluginfeed
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"net/url"
 	"regexp"
 	"runtime"
 	"sort"
@@ -11,9 +14,13 @@ import (
 
 // SchemaVersion 是订阅文件当前的 schema 版本。
 //
+//   - schema 1：最初版本，没有域名声明；
+//   - schema 2：插件条目可以声明 download_hosts / plugin_hosts（可选，见 Plugin）。
+//
 // 宿主只接受自己认识的小于等于该值的订阅；更高版本会被拒绝（而不是猜着解析），
-// 因为新版本可能有宿主不认识的语义。
-const SchemaVersion = 1
+// 因为新版本可能有宿主不认识的语义。旧版本照旧接受：声明是可选的，不写就是
+// 「未声明」，行为与 schema 1 一致。
+const SchemaVersion = 2
 
 // Feed 是订阅文件的顶层结构。
 type Feed struct {
@@ -34,8 +41,22 @@ type Plugin struct {
 	Mode string `yaml:"mode"`
 	// MinHostVersion 是要求的最低宿主版本；宿主更旧时该条目会被标记为不可用，
 	// 而不是等启动后才报协议不兼容。
-	MinHostVersion string   `yaml:"min_host_version"`
-	Packages       Packages `yaml:"packages"`
+	MinHostVersion string `yaml:"min_host_version"`
+	// DownloadHosts 是这个插件可能下载东西的域名（schema 2 起，可选）。
+	//
+	// 它约束的是**插件给出的产物地址**：宿主在下载前核对域名，不在集合里就拒绛
+	// 下载，并让用户重新确认订阅 —— 这样「插件能把下载指向哪里」在添加订阅时就
+	// 已经摆明并确认过，而不是每次安装弹一次窗。
+	//
+	// 写主机名本身（如 github.com），不含协议与路径，也不支持通配符；留空表示
+	// 未声明，宿主退回老规则（跨域下载逐次确认）。
+	DownloadHosts []string `yaml:"download_hosts,omitempty"`
+	// PluginHosts 是插件进程自己会访问的域名（schema 2 起，可选）。
+	//
+	// 仅供界面展示告知：插件是独立进程，它的网络访问宿主拦不住、也无法授权。
+	// 与 DownloadHosts 分开写，是为了不让人以为这部分也被管住了。
+	PluginHosts []string `yaml:"plugin_hosts,omitempty"`
+	Packages    Packages `yaml:"packages"`
 }
 
 // Package 是某个平台上的插件产物。
@@ -204,7 +225,99 @@ func (p Plugin) validate(hostVersion, hostPlatform string) error {
 	if p.MinHostVersion != "" && hostVersion != "" && CompareVersions(hostVersion, p.MinHostVersion) < 0 {
 		return fmt.Errorf("插件 %s 要求宿主版本 >= %s，当前为 %s", p.ID, p.MinHostVersion, hostVersion)
 	}
+	if err := validateHosts(p.ID, "download_hosts", p.DownloadHosts); err != nil {
+		return err
+	}
+	if err := validateHosts(p.ID, "plugin_hosts", p.PluginHosts); err != nil {
+		return err
+	}
 	return nil
+}
+
+// hostRe 限制声明里的主机名：不含协议、路径、端口、通配符，也不含下划线。
+//
+// 校验从严是故意的：声明是给人看、给机器比的，写错了应当在发布前就暴露，而不是
+// 变成一条永远匹配不上的规则。
+var hostRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
+
+func validateHosts(id, field string, hosts []string) error {
+	seen := make(map[string]bool, len(hosts))
+	for _, raw := range hosts {
+		h := strings.TrimSpace(raw)
+		if h != strings.ToLower(h) {
+			return fmt.Errorf("插件 %s 的 %s 里 %q 必须是小写主机名", id, field, raw)
+		}
+		if !hostRe.MatchString(h) {
+			return fmt.Errorf("插件 %s 的 %s 里 %q 不是合法主机名（只写主机名，不含协议、路径、端口或通配符）", id, field, raw)
+		}
+		if seen[h] {
+			return fmt.Errorf("插件 %s 的 %s 里 %q 重复", id, field, raw)
+		}
+		seen[h] = true
+	}
+	return nil
+}
+
+// AllowsDownload 报告某个下载地址是否落在该插件声明的域名集合内。
+//
+// 第二个返回值是地址的主机名，便于报错时说清是哪儿出的问题。
+//
+// 未声明 DownloadHosts 时一律返回 true：那是 schema 1 的老行为，由订阅域名授权 +
+// 跨域逐次确认兜着。只接受**绝对地址** —— 相对地址要先相对订阅地址解析。
+func (p Plugin) AllowsDownload(rawURL string) (bool, string) {
+	host := HostOfURL(rawURL)
+	if len(p.DownloadHosts) == 0 {
+		return true, host
+	}
+	for _, h := range p.DownloadHosts {
+		if strings.EqualFold(strings.TrimSpace(h), host) {
+			return true, host
+		}
+	}
+	return false, host
+}
+
+// HostOfURL 返回地址的主机名（小写、去端口）；解析不出来时返回空串。
+func HostOfURL(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
+
+// DeclaredFingerprint 是整份清单「声明面」的指纹：把每个插件的下载域名排序后拼
+// 成稳定文本，再取 sha256。
+//
+// 它给「添加订阅时确认、更新时只在声明变了才重新确认」用：集合没变 → 指纹不变 →
+// 用户不需要再看一遍；变了 → 宿主把新增的域名摆出来重新确认。排序是必须的，
+// 否则生成器换个顺序就会让所有人的确认全部失效。
+//
+// 只覆盖**强制校验**的域名（download_hosts）：plugin_hosts 只是展示告知，它变了
+// 不值得打扰用户。
+func (f *Feed) DeclaredFingerprint() string {
+	if f == nil {
+		return ""
+	}
+	ids := make([]string, 0, len(f.Plugins))
+	byID := make(map[string]Plugin, len(f.Plugins))
+	for _, p := range f.Plugins {
+		ids = append(ids, p.ID)
+		byID[p.ID] = p
+	}
+	sort.Strings(ids)
+
+	var b strings.Builder
+	for _, id := range ids {
+		hosts := append([]string(nil), byID[id].DownloadHosts...)
+		sort.Strings(hosts)
+		b.WriteString(id)
+		b.WriteByte(':')
+		b.WriteString(strings.Join(hosts, ","))
+		b.WriteByte('\n')
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:])
 }
 
 func (pkg Package) validate() error {
