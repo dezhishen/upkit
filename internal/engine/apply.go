@@ -264,18 +264,24 @@ func cacheFileName(ref core.AppRef, art core.Artifact) string {
 		util.SanitizeFileName(ref.ID), sum[:6], filepath.Base(art.Name))
 }
 
-// Rollback 回滚到指定备份。
+// Rollback 回滚到指定备份（不指定时用最近一次）。
 func (e *Engine) Rollback(ctx context.Context, id, backupPath string) error {
-	if backupPath == "" {
-		if backups := e.backupsOf(ctx, id); len(backups) > 0 {
-			backupPath = backups[len(backups)-1].Path
-		} else {
-			return fmt.Errorf("%w: %s 没有可用的备份", core.ErrNotFound, id)
-		}
-	}
+	// 先 ensure 再找备份：备份列表要问适配器要，而那需要清单里的条目。顺序反过来
+	// 的话，启动后还没做过检查时（列表还是空的）回滚会直接报「没有可用的备份」，
+	// 而备份其实躺在磁盘上。
 	a, err := e.ensure(ctx, id)
 	if err != nil {
 		return err
+	}
+	if backupPath == "" {
+		backups, err := e.backups(ctx, a.Ref)
+		if err != nil {
+			return err
+		}
+		if len(backups) == 0 {
+			return fmt.Errorf("%w: %s 没有可用的备份", core.ErrNotFound, id)
+		}
+		backupPath = backups[len(backups)-1].Path
 	}
 	// 回滚同样要先把占着安装目录的进程结束掉：RemoveContents 遇到被占用的文件
 	// 会删一半就失败，目录变成「旧版删了一部分、新版残留一部分」的半成品，
@@ -330,18 +336,6 @@ func (e *Engine) Backups(ctx context.Context, id string) ([]core.Backup, error) 
 		return nil, err
 	}
 	return e.backups(ctx, a.Ref)
-}
-
-func (e *Engine) backupsOf(ctx context.Context, id string) []core.Backup {
-	a := e.Find(id)
-	if a == nil {
-		return nil
-	}
-	b, err := e.backups(ctx, a.Ref)
-	if err != nil {
-		return nil
-	}
-	return b
 }
 
 // ensure 取出条目并保证已完成一次检查。

@@ -47,14 +47,20 @@ func Export(path string, s *settings.Settings, a *apps.File, installed map[strin
 			path = DefaultPath(".")
 		}
 	}
-	exported := *s
-	exported.Path = ""
+	// 设置可选（上面那段默认路径就允许 s 为 nil），所以这里不能无条件解引用。
+	// 顺手清掉 Path：导出文件要能跨机器用，本机路径跟着走只会误导。
+	var exported *settings.Settings
+	if s != nil {
+		copied := *s
+		copied.Path = ""
+		exported = &copied
+	}
 	f := File{
 		Format:     Version,
 		Version:    a.Version,
 		ExportedAt: time.Now().UTC(),
 		Tool:       "upkit",
-		Settings:   &exported,
+		Settings:   exported,
 		Apps:       a,
 		Installed:  installed,
 	}

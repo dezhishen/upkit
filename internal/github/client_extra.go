@@ -70,5 +70,10 @@ func (r *Release) ReleaseAge(now time.Time) time.Duration {
 	if r.PublishedAt.IsZero() {
 		return 0
 	}
-	return now.Sub(r.PublishedAt)
+	// 上游时钟偏差会让发布时间落在「未来」，此时按 0 处理：
+	// 界面上显示「-1h 前」比显示「刚刚」更像故障。
+	if d := now.Sub(r.PublishedAt); d > 0 {
+		return d
+	}
+	return 0
 }

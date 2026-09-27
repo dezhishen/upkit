@@ -70,6 +70,9 @@ jobs:
       - name: 关键包覆盖率门禁
         # 阈值取在实测值下方 5–10 个点：既能拦住“新代码没写测试”，
         # 又不会因为无关紧要的一两行变动就把人卡在 CI 上。
+        #
+        # 补了测试就顺手把下限抬上来（实测值看上一层「覆盖率摘要」）：
+        # 下限只写「已经达到过的高度」，写低了等于没写。
         run: |
           set -u
           fail=0
@@ -88,19 +91,27 @@ jobs:
             fi
           }
 
-          check ./internal/util        80
-          check ./internal/registry    90
-          check ./internal/download    75
-          check ./internal/archive     70
-          check ./internal/unpacking   70
-          check ./internal/version     75
-          check ./internal/pluginfeed  65
-          check ./internal/apps        65
-          check ./internal/fsutil      60
-          check ./internal/settings    55
-          check ./internal/github      55
-          check ./internal/logging     55
-          check ./internal/engine      30
+          check ./internal/util          82
+          check ./internal/registry      92
+          check ./internal/registry/all  90
+          check ./internal/download      75
+          check ./internal/archive       68
+          check ./internal/unpacking     68
+          check ./internal/version       74
+          check ./internal/pluginfeed    68
+          check ./internal/apps          68
+          check ./internal/fsutil        60
+          check ./internal/settings      80
+          check ./internal/github        78
+          check ./internal/logging       66
+          check ./internal/engine        70
+          check ./internal/detect        88
+          check ./internal/detect/plugin 85
+          check ./internal/guard         80
+          check ./internal/manifest      82
+          check ./internal/method        65
+          check ./internal/method/plugin 90
+          check ./internal/tui           60
 
           exit $fail
 
