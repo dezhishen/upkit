@@ -89,8 +89,10 @@ func (m Model) updateSettings(key string) (tea.Model, tea.Cmd) {
 			switch f := rows[m.setCursor]; f.Kind {
 			case control.SettingBool, control.SettingEnum:
 				m.adjustSetting(1)
-			case control.SettingText:
-				m.prompt = m.settingTextPrompt(f)
+			case control.SettingInt, control.SettingText:
+				// 数字与文本都整段编辑：数字用 ←/→ 也能调，但要改大数（60 → 480）
+				// 靠按步长键得按几十次。
+				m.prompt = m.settingValuePrompt(f)
 			}
 		}
 	case "s":
@@ -104,7 +106,7 @@ func (m Model) updateSettings(key string) (tea.Model, tea.Cmd) {
 		}
 		m.setStatus("已保存到 " + m.ctrl.SettingsPath() + "（部分项重启后生效）")
 		return m, nil
-	case "R":
+	case "D":
 		m.confirm = &confirmBox{
 			Title:   "恢复默认设置",
 			Message: "将把设置恢复为内置默认值（不会删除软件清单）。",
@@ -147,11 +149,11 @@ func (m *Model) adjustSetting(delta int) {
 	}
 }
 
-// settingTextPrompt 造文本项的编辑弹窗。
+// settingValuePrompt 造文本项/数字项的编辑弹窗。
 //
 // 凭据类不预填原值（输入框按密码模式回显）：令牌铺在屏幕上会被录屏、肩窥和终端回滚
 // 缓冲带走。
-func (m Model) settingTextPrompt(f control.SettingItem) *promptBox {
+func (m Model) settingValuePrompt(f control.SettingItem) *promptBox {
 	key, label, hint, secret := f.Key, f.Label, f.Hint, f.Secret
 	cur := ""
 	if !secret {

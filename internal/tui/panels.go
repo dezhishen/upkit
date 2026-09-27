@@ -25,6 +25,10 @@ func (m Model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
 	v.WindowTitle = "upkit " + m.Version()
+	if !m.opts.NoMouse {
+		// 只开「单元格移动」级别：够用（点击/滚轮），事件量又比全量移动小得多。
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	return v
 }
 
@@ -41,9 +45,10 @@ func (m Model) render() string {
 	}
 
 	head := m.viewHeader(m.width)
+	actions, _ := m.viewActions(m.width)
 	foot := m.viewFooter(m.width)
 	bodyH := m.bodyHeight()
-	base := head + "\n" + m.viewBody(m.width, bodyH) + "\n" + foot
+	base := head + "\n" + m.viewBody(m.width, bodyH) + "\n" + actions + "\n" + foot
 
 	switch {
 	case m.prompt != nil:
@@ -61,7 +66,7 @@ func (m Model) overlay(base, modal string) string {
 	return m.theme.Overlay(m.theme.Dimmed(base), modal, m.width, m.height)
 }
 
-// bodyHeight 返回正文面板的可用高度：总高减去头部与底栏各占的行数。
+// bodyHeight 返回正文面板的可用高度：总高减去头部、操作栏与底栏各占的行数。
 //
 // 单独拿出来是因为按键处理也得知道「一屏能放几行」—— 设置面板要据此把光标留在可见
 // 范围内，而按键处理里根本没有渲染时的那个 bodyH。
@@ -74,11 +79,17 @@ func (m Model) bodyHeight() int {
 	if w <= 0 {
 		w = 80
 	}
-	body := h - countLines(m.viewHeader(w)) - countLines(m.viewFooter(w))
+	body := h - countLines(m.viewHeader(w)) - actionsHeight(m, w) - countLines(m.viewFooter(w))
 	if body < 4 {
 		body = 4
 	}
 	return body
+}
+
+// actionsHeight 返回操作栏占的行数（没有可用操作时为零行）。
+func actionsHeight(m Model, w int) int {
+	line, _ := m.viewActions(w)
+	return countLines(line)
 }
 func countLines(s string) int {
 	if s == "" {
@@ -190,7 +201,7 @@ func (m Model) viewOverview(w, height int) string {
 	}
 	if len(m.apps) == 0 {
 		return m.theme.Frame("概览",
-			"还没有任何软件。\n\n按 6 到「来源」面板，再按 o 添加官方源，\n软件会随源一起出现。",
+			"还没有任何软件。\n\n到「来源」面板（点上面的标签或按 6），\n在底部操作栏里选「官方源」，软件会随源一起出现。",
 			w, height, true)
 	}
 
@@ -209,7 +220,7 @@ func (m Model) viewOverview(w, height int) string {
 		YOffset(m.offset).
 		String()
 
-	return m.theme.Frame("概览（c 检查 · u 更新 · space 停用）", tbl, w, height, true)
+	return m.theme.Frame("概览", tbl, w, height, true)
 }
 
 // overviewRow 把一条软件整理成表格行。
@@ -360,7 +371,7 @@ func (m Model) viewDetail(w, height int) string {
 		}
 	}
 
-	return m.theme.Frame("详情（p 生成计划 · u 立即执行）",
+	return m.theme.Frame("详情",
 		m.scroll(strings.TrimRight(b.String(), "\n"), height-2), w, height, true)
 }
 
@@ -398,7 +409,7 @@ func (m Model) viewJobs(w, height int) string {
 		YOffset(m.jobOffset).
 		String()
 
-	return m.theme.Frame("任务（d 清除已完成）", tbl, w, height, true)
+	return m.theme.Frame("任务", tbl, w, height, true)
 }
 
 func (m Model) jobRow(i int, j *jobItem, nameMax, noteMax int) []string {
@@ -465,9 +476,9 @@ func (m Model) viewLogs(w, height int) string {
 		head += " · 关键字 " + m.logFilter
 	}
 	if !m.logFollow {
-		head += " · 已暂停跟随（G 恢复）"
+		head += " · 已暂停跟随（滚回去看历史）"
 	}
-	return m.theme.Frame("日志（"+head+" · f 切级别 · F 关键字）", m.logView.View(), w, height, true)
+	return m.theme.Frame("日志（"+head+"）", m.logView.View(), w, height, true)
 }
 
 // ── 设置 ──────────────────────────────────────────────────────
@@ -478,7 +489,7 @@ func (m Model) viewSettings(w, height int) string {
 	// 光标停在末项时窗口贴底：末项之后还有只读的路径信息，不贴底就永远看不到那几行。
 	sticky := len(rows) > 0 && m.setCursor >= len(rows)-1
 	body := m.scrollWindow(lines, m.setOffset, sticky, height-2)
-	return m.theme.Frame("设置（←/→ 调整 · space 编辑 · s 保存 · R 恢复默认）",
+	return m.theme.Frame("设置",
 		strings.Join(body, "\n"), w, height, true)
 }
 
@@ -517,7 +528,7 @@ func (m Model) settingsLines(rows []control.SettingItem, w int) []string {
 
 func (m Model) viewConfirm() string {
 	c := m.confirm
-	body := c.Message + "\n\n" + m.theme.OK().Render("[y] 确定") + "   " + m.theme.Err().Render("[n] 取消")
+	body := c.Message + "\n\n" + m.theme.OK().Render(modalYesLabel) + "   " + m.theme.Err().Render(modalNoLabel)
 	w := minInt(m.width-8, 72)
 	return m.theme.Frame(c.Title, body, w, countLines(body)+2, true)
 }
@@ -533,13 +544,40 @@ func (m Model) viewPrompt() string {
 	return m.theme.Frame(p.Title, body, w, countLines(body)+2, true)
 }
 
+// viewHelp 渲染 ? 面板：按组标题 + 「键名/说明」两列排。
+//
+// 键位条数比一屏多，所以这里也走滚动窗口（↑↓/PgUp/PgDn 翻，esc 退出）—— 面板自己
+// 长得超过屏幕、底下的键位被裁掉却看不出来，那正好是这轮要修的那类问题。
 func (m Model) viewHelp() string {
-	var b strings.Builder
-	b.WriteString(m.helpView.View(m.keys))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim().Render("按任意键返回"))
+	const keyW = 20
+	lines := make([]string, 0, 48)
+	for gi, g := range m.keys.groups() {
+		if gi > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, m.theme.Primary().Render(g.title))
+		for _, it := range g.items {
+			h := it.Help()
+			lines = append(lines, "  "+m.theme.Dim().Render(Cell(h.Key, keyW))+" "+h.Desc)
+		}
+	}
+	// 鼠标单独写一段：它的操作方式用键名表格说不清楚。
+	lines = append(lines, "",
+		m.theme.Primary().Render("鼠标"),
+		"  "+m.theme.Dim().Render("点标签切面板、点一行选中、同一行再点一次打开/编辑"),
+		"  "+m.theme.Dim().Render("滚轮滚动列表、点操作栏按钮、点弹窗上的确定/取消"),
+		"  "+m.theme.Dim().Render("用 --no-mouse 启动可关掉鼠标上报，恢复终端原生拖选"),
+	)
+
 	w := minInt(m.width-8, 72)
-	return m.theme.Frame("快捷键", b.String(), w, countLines(b.String())+2, true)
+	// 弹窗不能比屏幕高：高了 Overlay 就不再居中，内容直接溢出终端。
+	frameH := minInt(len(lines)+3, m.height-2)
+	if frameH < 5 {
+		frameH = 5
+	}
+	body := m.scrollWindow(lines, m.helpOffset, false, frameH-2)
+	title := "快捷键（↑↓ 翻看 · esc 返回）"
+	return m.theme.Frame(title, strings.Join(body, "\n"), w, frameH, true)
 }
 
 func (m Model) viewFooter(width int) string {

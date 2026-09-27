@@ -48,6 +48,11 @@ type Options struct {
 	NoColor bool
 	ASCII   bool
 	Borders string // unicode | square | ascii
+	// NoMouse 关掉鼠标上报。
+	//
+	// 开着鼠标上报时，终端的原生选择与右键粘贴会被程序接管，习惯拖选复制的人会
+	// 很难受 —— 所以留一把开关，而不是默认强制。
+	NoMouse bool
 	// ConfigPath 是 settings.yaml 的实际路径（界面上展示）。
 	ConfigPath string
 }
@@ -156,6 +161,11 @@ type Model struct {
 	// setOffset 是设置表单的滚动窗口起点（设置项一屏放不下，光标要能一路走到末项）。
 	setOffset int
 
+	// 鼠标双击判定：v2 的鼠标事件里没有点击次数，只能自己按「同位置 + 短间隔」判。
+	lastClickAt time.Time
+	lastClickX  int
+	lastClickY  int
+
 	// 来源面板：插件配置的编辑入口就在插件条目上。
 	srcCursor int
 	cfgFor    string // 非空表示正在编辑该来源的配置
@@ -177,11 +187,12 @@ type Model struct {
 	statusT time.Time
 	fatal   error
 
-	confirm  *confirmBox
-	prompt   *promptBox
-	help     bool
-	keys     keyMap
-	helpView help.Model
+	confirm    *confirmBox
+	prompt     *promptBox
+	help       bool
+	helpOffset int
+	keys       keyMap
+	helpView   help.Model
 }
 
 // New 构造模型。
@@ -192,7 +203,7 @@ func New(opts Options) Model {
 		theme:     NewTheme(opts.ASCII, opts.NoColor, opts.Borders),
 		logLevel:  "info",
 		logFollow: true,
-		status:    "按 ? 查看快捷键，c 检查更新",
+		status:    "在底部操作栏里选动作，按 ? 看全部键位",
 		installCh: make(chan installProgress, 64),
 		spin:      newSpinner(opts.ASCII),
 		keys:      newKeyMap(),
@@ -276,6 +287,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.resizeLogView()
 		return m, nil
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 
 	case eventMsg:
 		m.handleEvent(core.Event(msg))
@@ -631,7 +645,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				cmd = action(&m)
 			}
 			return m, cmd
-		case "n", "N", "esc", "q":
+		case "n", "N", "esc":
 			m.confirm = nil
 			m.setStatus("已取消")
 			return m, nil
@@ -639,7 +653,26 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.help {
-		m.help = false
+		// 帮助面板也能翻：键位条数比一屏多。
+		switch key {
+		case "up", "k":
+			m.helpOffset--
+		case "down", "j":
+			m.helpOffset++
+		case "pgup":
+			m.helpOffset -= 10
+		case "pgdown":
+			m.helpOffset += 10
+		case "g", "home":
+			m.helpOffset = 0
+		case "G", "end":
+			m.helpOffset = 1 << 14
+		default:
+			m.help = false // 其余任意键返回
+		}
+		if m.helpOffset < 0 {
+			m.helpOffset = 0
+		}
 		return m, nil
 	}
 
@@ -649,6 +682,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "?":
 		m.help = true
+		m.helpOffset = 0
 		return m, nil
 	case "1", "2", "3", "4", "5", "6":
 		m.tab = tabID(int(key[0] - '1'))
@@ -750,7 +784,7 @@ func (m Model) updateOverview(key string) (tea.Model, tea.Cmd) {
 				OnYes:   func(mm *Model) tea.Cmd { mm.busy = true; return mm.uninstallCmd(id, true) },
 			}
 		}
-	case "r":
+	case "R":
 		if a := m.current(); a != nil {
 			id, name := a.Ref.ID, a.Ref.DisplayName()
 			m.confirm = &confirmBox{

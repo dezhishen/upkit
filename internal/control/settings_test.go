@@ -153,14 +153,34 @@ func TestSettingIntentValidation(t *testing.T) {
 	if err := ctrl.AdjustSetting("storage.data_dir", 1); err == nil {
 		t.Fatalf("目录项不能用增减调整")
 	}
-	if err := ctrl.SetSetting("ui.refresh_ms", "300"); err == nil {
-		t.Fatalf("非文本项不能用整段写入")
+	if err := ctrl.SetSetting("ui.theme", "dark"); err == nil {
+		t.Fatalf("枚举项不能用整段写入")
 	}
 	if err := ctrl.AdjustSetting("没有这一项", 1); err == nil {
 		t.Fatalf("未知设置项应报错")
 	}
-	if _, err := ctrl.SettingValue("ui.refresh_ms"); err == nil {
-		t.Fatalf("非文本项没有可预填的值")
+	if _, err := ctrl.SettingValue("ui.theme"); err == nil {
+		t.Fatalf("枚举项没有可整段编辑的值")
+	}
+
+	// 数字项可以整段输入，超范围夹到区间内，非数字报错。
+	if err := ctrl.SetSetting("ui.refresh_ms", "300"); err != nil {
+		t.Fatalf("数字项应能整段写入: %v", err)
+	}
+	if got := settingValueOf(t, ctrl, "ui.refresh_ms"); got != "300" {
+		t.Fatalf("应为 300，实际 %q", got)
+	}
+	if err := ctrl.SetSetting("ui.refresh_ms", "99999"); err != nil {
+		t.Fatalf("超范围应夹到区间而不是报错: %v", err)
+	}
+	if got := settingValueOf(t, ctrl, "ui.refresh_ms"); got != "5000" {
+		t.Fatalf("应夹到上界 5000，实际 %q", got)
+	}
+	if err := ctrl.SetSetting("ui.refresh_ms", "abc"); err == nil {
+		t.Fatalf("非数字应报错")
+	}
+	if got, err := ctrl.SettingValue("ui.refresh_ms"); err != nil || got != "5000" {
+		t.Fatalf("数字项应能取回当前值，实际 %q err=%v", got, err)
 	}
 
 	// 数字项按步长走，并夹在区间内。

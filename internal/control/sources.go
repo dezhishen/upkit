@@ -167,7 +167,13 @@ func (c *Controller) ReloadSources(ctx context.Context) error {
 			c.afs.Sources = fresh.Sources
 		}
 	}
-	return c.ReloadPlugins(ctx)
+	if c.host == nil {
+		// 插件宿主没启用不算失败：清单已经重读了，只是没有来源要重建。
+		// 以前这里把「插件宿主未启用」抛成错误，于是没装插件的机器上「改完清单按
+		// 刷新」直接弹错，而用户想做的事其实已经做完了。
+		return nil
+	}
+	return c.host.Reconfigure(ctx, c.manifestSources())
 }
 
 // PluginConfig 返回某个插件声明的配置项及其当前值。

@@ -295,7 +295,7 @@ func TestSettingsPanelEditsDirs(t *testing.T) {
 	}
 
 	// 回填空值 = 跟随根目录：显示的应重新变回推导出来的默认路径。
-	m.prompt = m.settingTextPrompt(m.settingsRows()[idx])
+	m.prompt = m.settingValuePrompt(m.settingsRows()[idx])
 	m.prompt.Input.SetValue("")
 	m = update(t, m, key(tea.KeyEnter))
 	if got := settingText(t, m, "storage.data_dir"); got != before {

@@ -76,6 +76,91 @@ func (m Model) configRows(id string) []control.PluginField {
 	return fields
 }
 
+// sourceRowLines 返回每一行在来源面板内容区里的行号。
+//
+// 渲染与鼠标命中共用这一份映射：分组标题与空行会占掉行号，只按「第几行 = 第几个
+// 来源」算的话，点第一条就会选错人；两处各算一遍，改渲染时就一定会忘掉一处。
+func sourceRowLines(rows []sourceRow) []int {
+	lines := make([]int, len(rows))
+	line := 0
+	for i, r := range rows {
+		if i == 0 && !r.isSubscription {
+			line++ // 「插件来源」标题
+		}
+		if i > 0 && r.isSubscription && !rows[i-1].isSubscription {
+			line += 2 // 空行 + 「订阅」标题
+		}
+		lines[i] = line
+		line++
+	}
+	return lines
+}
+
+// sourceRowAt 把内容区行号翻成来源列表下标（含订阅详情/插件配置两层子视图）。
+func (m Model) sourceRowAt(line int) (int, bool) {
+	if m.feedFor != "" {
+		// 订阅详情：前两行是「订阅：地址」与空行。
+		idx := line - 2
+		if idx < 0 || idx >= len(m.feedEntries) {
+			return 0, false
+		}
+		return idx, true
+	}
+	if m.cfgFor != "" {
+		row := m.cfgRowAt(line)
+		return row, row >= 0
+	}
+	for i, l := range sourceRowLines(m.sourceRows()) {
+		if l == line {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// cfgRowAt 把插件配置视图的内容行号翻成字段下标（-1 表示没落到字段上）。
+func (m Model) cfgRowAt(line int) int {
+	info, ok := m.configSource()
+	if !ok {
+		return -1
+	}
+	row := 2 // 「插件：ID」+ 空行
+	for i, r := range m.configRows(info.ID) {
+		if row == line {
+			return i
+		}
+		row++
+		if i == m.cfgCursor && r.Help != "" {
+			row++ // 选中项下面的帮助行
+		}
+	}
+	return -1
+}
+
+// clampSrcCursor 把来源列表的光标收回界内。
+func (m *Model) clampSrcCursor() {
+	if n := len(m.sourceRows()); m.srcCursor >= n {
+		m.srcCursor = n - 1
+	}
+	if m.srcCursor < 0 {
+		m.srcCursor = 0
+	}
+}
+
+// clampConfigCursor 把插件配置表单的光标收回界内。
+func (m *Model) clampConfigCursor() {
+	n := 0
+	if info, ok := m.configSource(); ok {
+		n = len(m.configRows(info.ID))
+	}
+	if m.cfgCursor >= n {
+		m.cfgCursor = n - 1
+	}
+	if m.cfgCursor < 0 {
+		m.cfgCursor = 0
+	}
+}
+
 // ── 渲染 ──────────────────────────────────────────────────────
 
 func (m Model) viewSources(w, height int) string {
@@ -90,7 +175,7 @@ func (m Model) viewSources(w, height int) string {
 	if len(rows) == 0 {
 		return m.theme.Frame("来源",
 			"还没有任何插件来源。\n\n"+
-				"· 加订阅：按 a 填订阅地址，upkit 会自动下载并安装插件（需逐级授权）\n"+
+				"· 加订阅：在下面的操作栏里选「加订阅」，填上地址，upkit 会自动下载并安装（需逐级授权）\n"+
 				"· 手工安装：把插件可执行文件与 <id>.plugin.yaml 放进 plugin/ 目录\n"+
 				"· 订阅支持 .json / .yaml / .yml 三种格式",
 			w, height, true)
@@ -98,29 +183,20 @@ func (m Model) viewSources(w, height int) string {
 
 	var b strings.Builder
 	for i, r := range rows {
-		if r.isSubscription && (i == 0 || !rows[i-1].isSubscription) {
-			if i > 0 {
-				b.WriteString("\n")
-			}
-			b.WriteString(m.theme.Primary().Render("订阅"))
-			b.WriteString("\n")
-		}
-		if !r.isSubscription && i == 0 {
+		// 分组标题的位置与 sourceRowLines 保持一致（鼠标靠它把点击翻成行号）。
+		switch {
+		case i == 0 && !r.isSubscription:
 			b.WriteString(m.theme.Primary().Render("插件来源"))
+			b.WriteString("\n")
+		case i > 0 && r.isSubscription && !rows[i-1].isSubscription:
+			b.WriteString("\n")
+			b.WriteString(m.theme.Primary().Render("订阅"))
 			b.WriteString("\n")
 		}
 		b.WriteString(m.sourceLine(i, r))
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n")
-	// 提示行要压到面板内宽以内：比面板宽时会被 Frame 折行，把最后几行来源挤出可视区。
-	avail := w - 4
-	if avail < 8 {
-		avail = 8
-	}
-	hint := "enter/c 进入   t 信任   o 官方源   a 加订阅   d 删除   space 启停   r 重载"
-	b.WriteString(m.theme.Dim().Render(Truncate(hint, avail)))
 	return m.theme.Frame("来源", strings.TrimRight(b.String(), "\n"), w, height, true)
 }
 
@@ -214,7 +290,6 @@ func (m Model) viewPluginConfig(w, height int) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(m.theme.Dim().Render("enter 编辑   D 恢复默认   esc 返回"))
 	return m.theme.Frame("插件配置", strings.TrimRight(b.String(), "\n"), w, height, true)
 }
 
@@ -238,7 +313,7 @@ func (m Model) updateSources(key string) (tea.Model, tea.Cmd) {
 		m.srcCursor = 0
 	case "G", "end":
 		m.srcCursor = len(rows) - 1
-	case "enter", "c", "l":
+	case "enter":
 		if m.srcCursor < 0 || m.srcCursor >= len(rows) {
 			break
 		}
@@ -269,9 +344,7 @@ func (m Model) updateSources(key string) (tea.Model, tea.Cmd) {
 	if m.srcCursor < 0 {
 		m.srcCursor = 0
 	}
-	if m.srcCursor >= len(rows) {
-		m.srcCursor = len(rows) - 1
-	}
+	m.clampSrcCursor()
 	return m, nil
 }
 
@@ -283,7 +356,7 @@ func (m Model) updatePluginConfig(key string) (tea.Model, tea.Cmd) {
 	}
 	rows := m.configRows(info.ID)
 	switch key {
-	case "esc", "q", "h", "left", "backspace":
+	case "esc":
 		m.cfgFor = ""
 		return m, nil
 	case "j", "down":
@@ -294,7 +367,7 @@ func (m Model) updatePluginConfig(key string) (tea.Model, tea.Cmd) {
 		m.cfgCursor = 0
 	case "G", "end":
 		m.cfgCursor = len(rows) - 1
-	case "enter", "l":
+	case "enter":
 		if m.cfgCursor >= 0 && m.cfgCursor < len(rows) {
 			return m.editConfigField(info, rows[m.cfgCursor])
 		}
@@ -306,9 +379,7 @@ func (m Model) updatePluginConfig(key string) (tea.Model, tea.Cmd) {
 	if m.cfgCursor < 0 {
 		m.cfgCursor = 0
 	}
-	if m.cfgCursor >= len(rows) {
-		m.cfgCursor = len(rows) - 1
-	}
+	m.clampConfigCursor()
 	return m, nil
 }
 

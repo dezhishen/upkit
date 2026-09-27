@@ -46,14 +46,14 @@ func TestSourcesPanelEmptyState(t *testing.T) {
 	}
 }
 
-// 插件配置的入口就在插件条目上：按 c 进入该插件的配置视图。
+// 插件配置的入口就在插件条目上：在操作栏里选「打开」（或按 enter）进入配置视图。
 func TestSourcesPanelOpensPluginConfig(t *testing.T) {
 	m := newTestModelWith(t, func(o *control.Options) {
 		o.Apps.Sources = []apps.SourceSpec{{ID: "corp-index", Name: "企业源", Kind: "plugin"}}
 	})
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(t, m, key('6'))
-	m = update(t, m, key('c'))
+	m = update(t, m, key(tea.KeyEnter))
 
 	if m.cfgFor != "corp-index" {
 		t.Fatalf("应进入 corp-index 的配置视图，实际 cfgFor=%q", m.cfgFor)
@@ -309,17 +309,21 @@ func TestToggleDiscoveredSourceExplainsTrust(t *testing.T) {
 	}
 }
 
-// 提示行必须落在面板内宽以内：超宽会被 Frame 折行，把最后几行来源挤出可视区。
-func TestSourcesHintFitsPanelWidth(t *testing.T) {
-	const hint = "enter/c 进入   t 信任   o 官方源   a 加订阅   d 删除   space 启停   r 重载"
+// 面板内容行不能超宽：超了会被 Frame 折行，把后面的行挤出可视区。
+//
+// 键位说明现在由操作栏统一承担（可点、宽度自适应），面板内不再各写一行提示 ——
+// 这条断言改成盯住整个面板：每一行的显示宽度都不超过给定宽度。
+func TestSourcesViewFitsPanelWidth(t *testing.T) {
 	m := newTestModelWith(t, func(o *control.Options) {
 		o.Apps.Sources = []apps.SourceSpec{{ID: "corp-index", Name: "企业源", Kind: "plugin"}}
 	})
 
-	out := m.viewSources(80, 20)
-	// 折行的断点正好落在提示里，Contains 就会失败 —— 这是最直接的不折行断言。
-	if !strings.Contains(out, hint) {
-		t.Fatalf("80 列下提示行被折行（或内容变了）:\n%s", out)
+	const width = 80
+	out := m.viewSources(width, 20)
+	for _, line := range strings.Split(out, "\n") {
+		if w := Width(line); w > width {
+			t.Fatalf("有内容行宽 %d 超过面板宽 %d：%q", w, width, line)
+		}
 	}
 }
 

@@ -235,13 +235,18 @@ func (c *Controller) SettingsForm() []SettingItem {
 	}
 	out := make([]SettingItem, 0, len(settingCatalog))
 	for _, def := range settingCatalog {
+		hint := def.hint
+		if hint == "" && def.kind == SettingInt {
+			// 数字项整段编辑时要有说明：输入框里不写清范围，用户就得靠试。
+			hint = fmt.Sprintf("范围 %d–%d，步长 %d", def.min, def.max, def.step)
+		}
 		out = append(out, SettingItem{
 			Key:    def.key,
 			Label:  def.label,
 			Kind:   def.kind,
 			Text:   settingText(c.set, def),
 			Step:   def.step,
-			Hint:   def.hint,
+			Hint:   hint,
 			Secret: def.secret,
 		})
 	}
@@ -276,8 +281,21 @@ func (c *Controller) SetSetting(key, raw string) error {
 	if err != nil {
 		return err
 	}
-	if def.kind != SettingText {
-		return fmt.Errorf("设置项 %s 不是文本项，不能用整段写入", key)
+	switch def.kind {
+	case SettingInt:
+		// 数字项也允许整段写入：从 60 调到 480 不该靠按几十次 →。
+		// 超范围的输入夹到区间内，和增减走同一套边界。
+		n, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil {
+			return fmt.Errorf("设置项 %s 需要整数，收到 %q", key, raw)
+		}
+		def.setInt(c.set, clampSettingValue(n, def.min, def.max))
+		c.settingsDirty = true
+		return nil
+	case SettingText:
+		// 继续走下面的文本分支。
+	default:
+		return fmt.Errorf("设置项 %s 不能用整段写入", key)
 	}
 	if def.dirName != "" {
 		// 目录项：留空表示跟随根目录，解析成实际路径再存 —— 界面上显示的始终是
@@ -298,10 +316,14 @@ func (c *Controller) SettingValue(key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if def.kind != SettingText {
-		return "", fmt.Errorf("设置项 %s 不是文本项", key)
+	switch def.kind {
+	case SettingText:
+		return def.getStr(c.set), nil
+	case SettingInt:
+		return strconv.Itoa(def.getInt(c.set)), nil
+	default:
+		return "", fmt.Errorf("设置项 %s 没有可整段编辑的值", key)
 	}
-	return def.getStr(c.set), nil
 }
 
 // SaveSettings 把设置落盘，并清掉「未保存」标记。

@@ -182,7 +182,6 @@ func (m Model) viewFeedDetail(w, height int) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(m.theme.Dim().Render("i/enter 安装或更新   r 重新拉取   esc 返回"))
 	return m.theme.Frame("订阅详情", strings.TrimRight(b.String(), "\n"), w, height, true)
 }
 
@@ -214,7 +213,7 @@ func (m Model) feedLine(i int, e pluginfeed.Entry) string {
 
 func (m Model) updateFeedDetail(key string) (tea.Model, tea.Cmd) {
 	switch key {
-	case "esc", "q", "h", "left", "backspace":
+	case "esc":
 		m.feedFor = ""
 		m.feedEntries = nil
 		m.feedLoaded = false
@@ -244,10 +243,18 @@ func (m Model) updateFeedDetail(key string) (tea.Model, tea.Cmd) {
 	if m.feedCursor < 0 {
 		m.feedCursor = 0
 	}
+	m.clampFeedCursor()
+	return m, nil
+}
+
+// clampFeedCursor 把订阅详情的选中行收回界内。
+func (m *Model) clampFeedCursor() {
 	if m.feedCursor >= len(m.feedEntries) {
 		m.feedCursor = len(m.feedEntries) - 1
 	}
-	return m, nil
+	if m.feedCursor < 0 {
+		m.feedCursor = 0
+	}
 }
 
 // humanBytes 把字节数格式化成易读形式。

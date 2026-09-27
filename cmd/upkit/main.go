@@ -6,6 +6,7 @@
 //	upkit.exe --print-paths       # 打印便携目录布局后退出（不需要终端）
 //	upkit.exe --config D:\x\config\settings.yaml
 //	upkit.exe --log-level debug --no-color --ascii
+//	upkit.exe --no-mouse            # 关掉鼠标上报，保留终端原生拖选复制
 //	upkit.exe --version           # 打印版本信息
 package main
 
@@ -50,6 +51,7 @@ func main() {
 		logDir     = flag.String("log-dir", "", "日志目录（覆盖设置文件）")
 		noColor    = flag.Bool("no-color", false, "禁用颜色输出")
 		asciiUI    = flag.Bool("ascii", false, "仅使用 ASCII 字符绘制界面")
+		noMouse    = flag.Bool("no-mouse", false, "关闭鼠标支持（保留终端原生的拖选复制与右键粘贴）")
 		focusMode  = flag.Bool("focus", false, "以无标题栏的焦点模式重新启动（仅 Windows Terminal）")
 		showVer    = flag.Bool("version", false, "打印版本并退出")
 		showPaths  = flag.Bool("print-paths", false, "打印目录布局与配置文件位置后退出")
@@ -96,6 +98,7 @@ func main() {
 		logDir:     *logDir,
 		noColor:    *noColor,
 		ascii:      *asciiUI,
+		noMouse:    *noMouse,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, "upkit:", err)
 		os.Exit(1)
@@ -109,6 +112,7 @@ type optionSet struct {
 	logDir     string
 	noColor    bool
 	ascii      bool
+	noMouse    bool
 }
 
 // run 装配设置、清单、日志、引擎并进入 TUI。
@@ -215,6 +219,7 @@ func run(opts optionSet) error {
 		Version:    version, // 短版本号：界面标题已含工具名
 		NoColor:    opts.noColor,
 		ASCII:      opts.ascii,
+		NoMouse:    opts.noMouse,
 		Borders:    set.UI.Borders,
 		ConfigPath: set.Path,
 	})
