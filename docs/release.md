@@ -115,7 +115,12 @@ test（gofmt / vet / test -race + 覆盖率 + 13 个包的分级门禁）
 | --- | --- |
 | `upkit-windows-amd64.exe` | 主程序（amd64） |
 | `upkit-windows-arm64.exe` | 主程序（arm64） |
-| `sha256sums.txt` | 以上产物的校验值 |
+| `sha256sums.txt` | 以上两个文件的校验值 |
+
+发布用 `build.sh --no-zip`，只出这两个裸 exe。本地 `make release` 仍会另外打 zip
+发行包（含文档与示例配置）供自用分发，但发布流水线不产出它 —— 否则那些 zip 会出现在
+`sha256sums.txt` 里却上传不出去，等于给用户一份指向不存在文件的校验清单。
+`publish` 里有一道反向检查盯着这件事。
 
 插件制品与订阅清单不在本仓库发布，见 §4。
 

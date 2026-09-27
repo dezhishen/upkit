@@ -54,7 +54,10 @@ jobs:
       - name: 构建 upkit（windows/amd64 + windows/arm64）
         env:
           FEED_URL: ${{ inputs.feed-url }}
-        run: bash scripts/build.sh --version "${VERSION}" --feed-url "${FEED_URL}"
+        # --no-zip：发布只出两个裸 exe。不加的话 build.sh 还会打 zip 包，而
+        # 上传 artifact 时只 glob *.exe —— 那些 zip 不会进 release，却会出现在
+        # sha256sums.txt 里，等于给了一份指向不存在文件的校验清单。
+        run: bash scripts/build.sh --version "${VERSION}" --feed-url "${FEED_URL}" --no-zip
 
       - name: 展示产物
         run: |

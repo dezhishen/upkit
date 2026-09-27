@@ -100,6 +100,17 @@ jobs:
           done
           (( missing == 0 )) || exit 1
 
+          # 反向检查：sha256sums.txt 列出的每一项都必须在本 job 的发布清单里。
+          # 否则用户拿到的是一份指向不存在文件的校验清单 —— v0.0.1 就出过这个：
+          # build.sh 打了 zip 包，artifact 只 glob *.exe，于是清单里多出两行。
+          while read -r _sum name; do
+            [[ -n "$name" ]] || continue
+            if ! printf '%s\n' "${files[@]}" | grep -qxF "dist/${name}"; then
+              echo "::error::sha256sums.txt 列出了 dist/${name}，但它不在本次发布的文件里"
+              exit 1
+            fi
+          done <dist/sha256sums.txt
+
           notes_args=(--generate-notes)
           [[ -n "$START_TAG" ]] && notes_args+=(--notes-start-tag "$START_TAG")
 
