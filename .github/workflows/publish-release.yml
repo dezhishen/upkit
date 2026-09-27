@@ -83,7 +83,10 @@ jobs:
           fi
 
           # 产物一次性上传：upkit 本体、校验值、示例插件、官方订阅清单。
-          # feed.yaml 作为附件发布 —— 内置订阅地址指向 .../releases/latest/download/feed.yaml。
+          #
+          # feed.yaml 在这里附件一份，是为了让每次发布都可追溯（清单里的产物地址
+          # 与 sha256 是按本次产物现算的）。内置订阅实际读的正本在清单仓库
+          # dezhishen/upkit-hub，那份需要另行同步 —— 本工作流不碰它。
           files=(
             dist/upkit-windows-amd64.exe
             dist/upkit-windows-arm64.exe

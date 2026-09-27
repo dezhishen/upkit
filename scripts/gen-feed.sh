@@ -130,9 +130,13 @@ mkdir -p "$(dirname "$OUT")"
   cat <<'HEADER'
 # upkit 官方订阅清单（由 scripts/gen-feed.sh 自动生成，请勿手工编辑）
 #
-# 它作为 release 附件发布，内置订阅地址指向 .../releases/latest/download/feed.yaml。
-# 放在发布附件而不是仓库里的原因是：清单里写死的产物地址与 sha256 必须与某一次发布
-# 严格对应，仓库里的文件会被后续提交悄悄改动，让已发布版本的行为跟着漂移。
+# 它有两个去处：
+#   1. 作为本仓库 release 的附件发布 —— 内容与本次发布严格对应，便于追溯；
+#   2. 提交到清单仓库 dezhishen/upkit-hub —— 内置订阅实际读的是那一份：
+#      https://raw.githubusercontent.com/dezhishen/upkit-hub/main/feed.yaml
+#
+# 清单不放在主仓库的源码树里，是因为它按平台写死了产物地址与 sha256，必须与某一次
+# 发布严格对应；留在源码树会被后续提交顺手改掉，让已发布版本的行为跟着漂移。
 #
 # 摘要由发布流水线在构建之后直接计算，因此与产物天然一致。
 

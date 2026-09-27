@@ -43,6 +43,15 @@ make next-version BUMP=minor STAGE=rc         # 等价写法
    - `stage`：`stable` / `rc` / `beta`
    - `dry_run`：勾上就只演练（构建 + 生成清单，不打 tag、不发版）——**第一次用建议先演练一次**
 3. 运行结束后去 Releases 页面核对产物与 changelog。
+4. **把 `feed.yaml` 同步到清单仓库**（正式版必做，预览版按需）。
+
+   内置订阅读的是 `dezhishen/upkit-hub` 里的清单，本仓库 release 附件里那份只是
+   留档与取用来源。从本次 release 下载 `feed.yaml`，拷进 `upkit-hub` 仓库根目录提交
+   即可 —— 里面的下载地址无需改动，它指向的正是本仓库这次发布的产物。
+
+   漏掉这一步的后果是**静默的**：旧清单里的地址与 sha256 仍指向旧 release 的产物，
+   那些附件还在，所以不会报错。用户看到的是「官方源可用，但插件一直是旧版本」，
+   而不是任何异常。发布记录里请对着第 3 步的附件确认一次。
 
 流水线的四个 job：
 
@@ -145,7 +154,10 @@ CI 的 artifact 分两处，用途不同：
 它有两个去处：
 
 1. **作为本仓库 release 的附件发布** —— 内容与本次发布严格对应，便于追溯；
-2. **提交到 `dezhishen/upkit-hub`** —— 内置订阅实际读的是那个仓库里的清单：
+   也是发布清单第 4 步（同步到清单仓库）的取用来源：直接从 release 页面下载即可，
+   不必本地重建。
+2. **提交到 `dezhishen/upkit-hub`** —— 内置订阅实际读的是那个仓库里的清单
+   （**发布清单第 4 步**）：
 
 ```
 https://raw.githubusercontent.com/dezhishen/upkit-hub/main/feed.yaml
