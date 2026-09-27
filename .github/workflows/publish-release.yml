@@ -82,20 +82,15 @@ jobs:
             exit 1
           fi
 
-          # 产物一次性上传：upkit 本体、校验值、示例插件、官方订阅清单。
-          #
-          # feed.yaml 在这里附件一份，是为了让每次发布都可追溯（清单里的产物地址
-          # 与 sha256 是按本次产物现算的）。内置订阅实际读的正本在清单仓库
-          # dezhishen/upkit-hub，那份需要另行同步 —— 本工作流不碰它。
+          # upkit 本体与校验值。插件制品与 feed.yaml 都由 upkit-hub 托管，
+          # 不在本仓库发布 —— 本仓库只做平台。
           files=(
             dist/upkit-windows-amd64.exe
             dist/upkit-windows-arm64.exe
             dist/sha256sums.txt
-            dist/feed.yaml
           )
-          for f in dist/plugins/*.exe; do files+=("$f"); done
 
-          # 逐个确认存在。glob 没匹配上时拿到的是字面量，也会在这里被挡下。
+          # 逐个确认存在，缺失时给出比 gh 更明确的报错。
           missing=0
           for f in "${files[@]}"; do
             if [[ ! -f "$f" ]]; then
@@ -142,6 +137,6 @@ jobs:
             echo "预览版: $PRERELEASE"
             echo
             echo '```'
-            echo "产物: upkit-windows-amd64.exe / upkit-windows-arm64.exe / feed.yaml / 插件"
+            echo "产物: upkit-windows-amd64.exe / upkit-windows-arm64.exe / sha256sums.txt"
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"

@@ -117,7 +117,7 @@ jobs:
     # 唯一能下载 exe 的地方只剩 smoke 的 release-smoke artifact，
     # 名字也不直观，找起来很费劲。现在两个 job 的职责是：
     #   build —— 日常可下载的构建产物（每次 push 都有，保留 7 天）
-    #   smoke —— 完整发布演练（含插件与 feed.yaml），与真发版同一条链路
+    #   smoke —— 完整发布演练（与真发版同一条链路）
     strategy:
       fail-fast: false
       matrix:
@@ -157,7 +157,7 @@ jobs:
     name: 发布演练（不推 release）
     needs: test
     # 与真发版共用同一份构建定义（.github/workflows/build-release.yml），
-    # 所以「main 上是绿的」就意味着「现在能发版」—— 插件构建、feed.yaml 生成
+    # 所以「main 上是绿的」就意味着「现在能发版」—— 交叉编译、订阅地址注入
     # 这些环节都在这里提前验过，不会拖到发版那一刻才发现。
     #
     # 产物传到 artifact 供下载核对；本工作流不碰 tag、不碰 Release。

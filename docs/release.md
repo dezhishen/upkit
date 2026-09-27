@@ -24,9 +24,9 @@
 - **`hotfix` 与 `patch` 算出来的是同一个位置**。分开只为让发布记录能看出
   「这是修补已发布版本」还是「这是主线常规迭代」。
 - **预览版自动递增序号**：已有 `v1.3.0-rc.1`，再发一次 rc 得到 `v1.3.0-rc.2`。
-- 预览版在 GitHub 上标记为 **pre-release**，因此**不会**成为 `releases/latest`，
-  也就不会自动覆盖 `upkit-hub` 仓库里的正式清单 —— 把预览版的清单推过去需要你显式
-  去做（见 §4）。
+- 预览版在 GitHub 上标记为 **pre-release**，因此**不会**成为 `releases/latest`；
+  而内置订阅地址取的正是 upkit-hub 的 `releases/latest`，所以 upkit-hub 发预览版
+  不会影响普通用户读到的清单。
 
 版本计算由 `scripts/next-version.sh` 负责，纯 bash、无依赖，可以本地先看一眼：
 
@@ -41,24 +41,17 @@ make next-version BUMP=minor STAGE=rc         # 等价写法
 2. Actions → **Release** → *Run workflow*：
    - `bump`：`patch` / `minor` / `major` / `hotfix`
    - `stage`：`stable` / `rc` / `beta`
-   - `dry_run`：勾上就只演练（构建 + 生成清单，不打 tag、不发版）——**第一次用建议先演练一次**
+   - `dry_run`：勾上就只演练（打 tag 前的完整构建，不发版）——**第一次用建议先演练一次**
 3. 运行结束后去 Releases 页面核对产物与 changelog。
-4. **把 `feed.yaml` 同步到清单仓库**（正式版必做，预览版按需）。
 
-   内置订阅读的是 `dezhishen/upkit-hub` 里的清单，本仓库 release 附件里那份只是
-   留档与取用来源。从本次 release 下载 `feed.yaml`，拷进 `upkit-hub` 仓库根目录提交
-   即可 —— 里面的下载地址无需改动，它指向的正是本仓库这次发布的产物。
-
-   漏掉这一步的后果是**静默的**：旧清单里的地址与 sha256 仍指向旧 release 的产物，
-   那些附件还在，所以不会报错。用户看到的是「官方源可用，但插件一直是旧版本」，
-   而不是任何异常。发布记录里请对着第 3 步的附件确认一次。
+发布只产出 upkit 本体。插件制品与订阅清单归 `upkit-hub`，不在本仓库发布（见 §4）。
 
 流水线的四个 job：
 
 ```
 verify（gofmt / vet / test）
   └─ version（算版本 → 打 tag → 算 changelog 起点）
-       └─ build（upkit ×2 架构 + 示例插件 ×2 架构 + 生成 feed.yaml）
+       └─ build（upkit ×2 架构，并注入内置订阅地址）
             └─ publish（gh release create，附带全部产物）
 ```
 
@@ -123,8 +116,8 @@ test（gofmt / vet / test -race + 覆盖率 + 13 个包的分级门禁）
 | `upkit-windows-amd64.exe` | 主程序（amd64） |
 | `upkit-windows-arm64.exe` | 主程序（arm64） |
 | `sha256sums.txt` | 以上产物的校验值 |
-| `upkit-hub-windows-{amd64,arm64}.exe` | 示例插件 |
-| `feed.yaml` | **官方订阅清单**，见下节 |
+
+插件制品与订阅清单不在本仓库发布，见 §4。
 
 ### 想下载一个 exe 来试，去哪找
 
@@ -133,7 +126,7 @@ CI 的 artifact 分两处，用途不同：
 | 来源 | artifact 名 | 内容 | 保留 |
 | --- | --- | --- | --- |
 | `ci` 的 **build** job | `upkit-windows-amd64` / `upkit-windows-arm64` | 只有主程序 exe | 7 天 |
-| `ci` 的 **smoke** job | `release-smoke` | 完整的发布产物（exe + 插件 + `feed.yaml`） | 仓库默认 |
+| `ci` 的 **smoke** job | `release-smoke` | 完整的发布产物（两个架构的 exe + `sha256sums.txt`） | 仓库默认 |
 | `release` 的 **publish** | 无 artifact，直接进 [Releases](../../releases) | 同上 | 永久 |
 
 下载路径：仓库 → **Actions** → 选一次运行 → 页面底部 **Artifacts**。
@@ -142,44 +135,45 @@ CI 的 artifact 分两处，用途不同：
 列表为空时，先看同一次运行里 `test` 是不是红的。
 
 日常只是想拿个能跑的 exe 手动点一点，用 **build** 的产物就够了 —— 每次 push 都会
-重新构建，artifact 名里就是目标平台。要验完整的发行流程（含插件与订阅清单），
-或者要对照 release 内容，才需要 **smoke** 的 `release-smoke`。
+重新构建，artifact 名里就是目标平台。要对照 release 内容、或者验一遍注入订阅地址后
+的完整构建，才需要 **smoke** 的 `release-smoke` —— 两者内容相同，只是 smoke 走的是
+与真发版完全一致的那条流水线。
 
 这些 exe 带版本信息（`v0.0.0-dev.<短提交>`），`upkit.exe --version` 能看出是哪个
 提交构建的。
 
-## 4. feed.yaml 从哪来
+## 4. 订阅清单与内置订阅地址
 
-`feed.yaml` 由 `scripts/gen-feed.sh` 在构建之后生成（摘要由产物现算，杜绝手工填错），
-它有两个去处：
+**upkit 不产清单。** 本仓库只做平台，外加把一个订阅地址编进二进制。
 
-1. **作为本仓库 release 的附件发布** —— 内容与本次发布严格对应，便于追溯；
-   也是发布清单第 4 步（同步到清单仓库）的取用来源：直接从 release 页面下载即可，
-   不必本地重建。
-2. **提交到 `dezhishen/upkit-hub`** —— 内置订阅实际读的是那个仓库里的清单
-   （**发布清单第 4 步**）：
+| 仓库 | 负责 |
+| --- | --- |
+| `upkit` | 平台本体；内置一个订阅地址 |
+| `upkit-hub` | 官方插件库：插件制品 + `feed.yaml` |
+
+清单里按平台写死了插件产物的地址与 sha256，必须与某一次插件发布严格对应。让它跟着
+upkit 的发布节奏走，就会陷入「更新插件得先重发 upkit」的循环；分开放则两边各自演进。
+
+### 内置地址
+
+默认值在 `internal/pluginfeed/builtin.go`，指向 upkit-hub 的 release 直链：
 
 ```
-https://raw.githubusercontent.com/dezhishen/upkit-hub/main/feed.yaml
+https://github.com/dezhishen/upkit-hub/releases/latest/download/feed.yaml
 ```
 
-清单与产物分开放是有意的：产物跟着 tag 走（不可变），清单需要能独立修正
-（比如某个 sha256 填错了，不必为此重发一个版本）。
+发布流水线会显式注入同一个值（`build-release.yml` 的 `feed-url` 输入 →
+`scripts/build.sh --feed-url`）。地址以 `-ldflags -X` 编进二进制，所以**换源要重发
+upkit**；注入的意义是把「用哪个源」这个决定放在流水线上，改镜像或内网源时不必动代码。
 
-清单里的产物地址指向**本仓库**的 release 下载地址
-（`https://github.com/dezhishen/upkit/releases/download/<tag>/...`），所以提交到
-`upkit-hub` 时不需要动 URL，只要把生成的文件整个拷过去。
+取 release 直链而不是 raw 分支链接：
 
-脚本在生成前会检查**每个插件是否覆盖了全部受支持平台**：漏一个架构，那个架构的用户
-会在「校验订阅」这一步失败，而这本可以在发布前发现。确实有意只发部分架构时，用
-`--allow-partial` 显式跳过。
+- release 附件不可变，upkit-hub 主分支上任何半成品提交都不会影响已发布版本；
+- raw 链接紧跟分支，改一行即刻对所有 upkit 生效，还带 CDN 缓存。
 
-`internal/pluginfeed` 里有测试盯着这条链路：脚本产出的清单必须能被宿主解析、
-通过校验、摘要与产物一致。脚本里写死的平台列表也有一致性检查，与代码漂移会报警。
+代价是 upkit-hub 每更新一次清单就要发一个 release。
 
 ### 换成自己的订阅源
-
-内置地址可在构建时覆盖，不必改代码：
 
 ```bash
 bash scripts/build.sh --feed-url https://mirror.internal/upkit/feed.yaml
@@ -188,6 +182,27 @@ make build-all FEED_URL=https://mirror.internal/upkit/feed.yaml
 
 `-X` 打错变量路径不会报错、只会静默保留默认值，所以 `internal/pluginfeed` 里有测试
 用真实的 `-ldflags` 构建一次探针来验证覆盖生效。
+
+### 本仓库里保留的插件工具
+
+下面几样仍在源码树里，但**发布流水线不再构建或发布它们**：
+
+| 路径 | 用途 |
+| --- | --- |
+| `cmd/upkit-hub/` | 官方插件的可运行样例，供测试与开发参考 |
+| `cmd/upkit-plugin-example/` | 最小起步样例，`docs/plugin-dev.md` 的实操对象 |
+| `scripts/build-plugin.sh` | 第三方插件的构建入口 |
+| `scripts/gen-feed.sh` | 清单生成器，待 upkit-hub 建好后搬过去 |
+
+`gen-feed.sh` 不依赖本仓库的任何东西 —— 只吃一个插件产物目录与 `--base-url`，所以
+搬到 upkit-hub 后把 `--base-url` 指向 upkit-hub 自己的 release 即可。生成前它会检查
+**每个插件是否覆盖了全部受支持平台**：漏一个架构，那个架构的用户会在「校验订阅」
+这一步失败，而这本可以在发布前发现；确实有意只发部分架构时用 `--allow-partial` 跳过。
+
+`internal/pluginfeed` 里有测试盯着这条链路：脚本产出的清单必须能被宿主解析、通过
+校验、摘要与产物一致；脚本里写死的平台列表也有一致性检查，与代码漂移会报警。这几个
+测试应当跟着脚本一起搬走。
+
 
 ## 5. changelog 怎么来的
 
@@ -258,11 +273,17 @@ git push origin v0.0.1
 
 ```bash
 make next-version BUMP=minor STAGE=rc    # 看看下一个版本号是多少
-bash scripts/build.sh --version v1.2.3   # 本地构建
+bash scripts/build.sh --version v1.2.3   # 本地构建（可加 --feed-url 换订阅源）
+```
+
+把订阅链路整个走一遍（这部分将来归 upkit-hub，现在仍可在本仓库验证）：
+
+```bash
 bash scripts/build-plugin.sh --release-name -v 1.2.3 -t windows/amd64 ./cmd/upkit-hub
 bash scripts/gen-feed.sh --plugins-dir dist/plugins --version 1.2.3 \
   --base-url https://example.com/dl -o dist/feed.yaml
 ```
 
-最后这条可以在本地把订阅链路走通：拿生成的 `feed.yaml` 起一个静态服务器，
-在 upkit 的「来源」面板里添加它，就能验证安装/更新流程。
+拿生成的 `feed.yaml` 起一个静态服务器，在 upkit 的「来源」面板里添加它，
+就能验证安装/更新流程。
+

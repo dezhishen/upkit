@@ -120,16 +120,21 @@ upkit 自带一条官方订阅：
 
 ```
 名称：upkit 官方源
-地址：https://raw.githubusercontent.com/dezhishen/upkit-hub/main/feed.yaml
+地址：https://github.com/dezhishen/upkit-hub/releases/latest/download/feed.yaml
 ```
 
 - 在「来源」面板里按 **o** 一键添加（省掉手输地址）；
 - **内置不绕过任何授权**：订阅功能仍默认关闭，域名仍需单独确认；
-- 清单由专门的仓库 `dezhishen/upkit-hub` 托管，**不放在主仓库里**。放主仓库的问题很
-  实在：清单里写死的产物地址与 sha256 必须与某一次发布严格对应，而它会和代码提交
-  搅在一起被顺手改掉，让已发布版本的行为跟着漂移。
-- 它列出的插件是 `upkit-hub`（`cmd/upkit-hub/`）—— 一个 catalog 模式的**示例插件**，
-  演示一条订阅如何分发多个软件（fzf / Ungoogled Chromium / 7-Zip 的版本查询）。
+- 清单与插件产物都由 `dezhishen/upkit-hub` 托管，**主仓库只做平台**。先分清两件事：
+  - 编进二进制的是**地址**（一个字符串），不是清单内容。按 `o` 时它被预填到输入框，
+    确认后由 upkit 在运行时拉取；
+  - 清单不放在主仓库，是因为它按平台写死了插件产物的地址与 sha256，必须与某一次插件
+    发布严格对应；跟着主仓库的代码提交走会被顺手改掉，让已发布版本的行为跟着漂移。
+- 地址取 release 直链而不是 raw 分支链接：release 附件不可变，upkit-hub 主分支上任何
+  半成品提交都不会影响已发布版本。代价是 upkit-hub 每更新一次清单就要发一个 release。
+- 它列出的插件是 `upkit-hub` —— 一个 catalog 模式的插件，演示一条订阅如何分发多个
+  软件（fzf / Ungoogled Chromium / 7-Zip 的版本查询）。本仓库里留了它的可运行源码
+  （`cmd/upkit-hub/`）供测试与开发参考，但发布流水线不再构建或发布它。
 
 ### 换成自己的源
 
@@ -149,7 +154,7 @@ go build -ldflags "-X github.com/dezhishen/upkit/internal/pluginfeed.BuiltinFeed
 ### 写自己的订阅
 
 `internal/pluginfeed/testdata/demo-feed.yaml` 是一份可以直接照抄的模板：多插件、
-多插件、多架构、相对路径引用产物，带逐条约定说明。
+多架构、相对路径引用产物，带逐条约定说明。
 
 它同时是 `internal/pluginfeed` 的**测试夹具** —— 这份示例写错了测试会直接变红
 （摘要是否真实、每个平台是否都能通过校验、相对路径是否真的装得上，都有断言）。
@@ -157,15 +162,24 @@ go build -ldflags "-X github.com/dezhishen/upkit/internal/pluginfeed.BuiltinFeed
 
 ### 发布官方源
 
+官方清单与插件产物都由 `dezhishen/upkit-hub` 托管，**主仓库不发布它们**。在那里：
+
 ```bash
 # 1. 构建插件产物
-bash scripts/build-plugin.sh -t windows/amd64 ./cmd/upkit-hub
+bash scripts/build-plugin.sh --release-name -v <版本> -t windows/amd64 ./cmd/upkit-hub
 
-# 2. 把产物与 feed.yaml 一起上传到 GitHub Release
+# 2. 生成清单（--base-url 指向 upkit-hub 自己的 release 下载地址）
+bash scripts/gen-feed.sh --plugins-dir dist/plugins --version <版本> \
+  --base-url https://github.com/dezhishen/upkit-hub/releases/download/<tag> -o feed.yaml
+
+# 3. 产物与 feed.yaml 一起上传到 upkit-hub 的 Release
 #    产物文件名保持 upkit-hub-<os>-<arch>[.exe]，feed.yaml 里填真实 sha256
 ```
 
 清单与产物同一次发布、同一个 tag，因此不存在「清单比产物新」的窗口。
+
+> `build-plugin.sh` 与 `gen-feed.sh` 目前仍在主仓库的 `scripts/` 下（供本地验证
+> 使用），等 upkit-hub 建好后连同 `internal/pluginfeed` 里对应的测试一起搬过去。
 
 ## 8. 边界与未尽事项
 

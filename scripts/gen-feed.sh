@@ -18,9 +18,12 @@
 # 产物文件名约定 <插件ID>-<os>-<arch>[.exe]，例如：
 #     upkit-hub-windows-amd64.exe  ->  id=upkit-hub, windows/amd64
 #
-# 为什么要有这个脚本：内置订阅（BuiltinFeedURL）指向的是 release 附件，而附件里
-# 写死的 sha256 必须与本次发布的产物严格对应。手工填摘要迟早会错，所以让发布流水线
-# 在构建之后直接算出来。
+# 为什么要有这个脚本：清单里按平台写死了产物地址与 sha256，必须与某一次插件发布
+# 严格对应。手工填摘要迟早会错，所以由脚本在构建之后直接算出来。
+#
+# 它归 upkit-hub 使用 —— 主仓库只做平台，不发布插件与清单。目前脚本还留在
+# scripts/ 下仅供本地验证，等 upkit-hub 建好后搬过去即可：它不依赖本仓库的任何
+# 东西，只吃一个插件产物目录与 --base-url。
 
 set -euo pipefail
 
@@ -130,15 +133,13 @@ mkdir -p "$(dirname "$OUT")"
   cat <<'HEADER'
 # upkit 官方订阅清单（由 scripts/gen-feed.sh 自动生成，请勿手工编辑）
 #
-# 它有两个去处：
-#   1. 作为本仓库 release 的附件发布 —— 内容与本次发布严格对应，便于追溯；
-#   2. 提交到清单仓库 dezhishen/upkit-hub —— 内置订阅实际读的是那一份：
-#      https://raw.githubusercontent.com/dezhishen/upkit-hub/main/feed.yaml
+# 它由 upkit-hub 发布，主仓库不再产清单。内置订阅读的是：
+#   https://github.com/dezhishen/upkit-hub/releases/latest/download/feed.yaml
 #
-# 清单不放在主仓库的源码树里，是因为它按平台写死了产物地址与 sha256，必须与某一次
-# 发布严格对应；留在源码树会被后续提交顺手改掉，让已发布版本的行为跟着漂移。
+# 清单与插件产物分开放，是因为它按平台写死了产物地址与 sha256，必须与某一次发布
+# 严格对应；留在主仓库会跟代码提交搅在一起被顺手改掉，让已发布版本的行为跟着漂移。
 #
-# 摘要由发布流水线在构建之后直接计算，因此与产物天然一致。
+# 摘要由产物现算，因此与产物天然一致。
 
 HEADER
   printf 'schema: 1\n'

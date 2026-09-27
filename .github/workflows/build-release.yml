@@ -1,12 +1,15 @@
 name: Build Release Artifacts
 
-# 可复用工作流：构建一套完整的发布产物（upkit + 插件 + 订阅清单）。
+# 可复用工作流：构建 upkit 的发行产物。
 #
 # 它被两处调用，共用同一份定义，避免两条路径各写一遍后悄悄漂移：
 #   · ci.yml     —— main 上的发布演练，产物进 artifact 供下载核对，不发 release
 #   · release.yml —— 真发版，产物交给 publish job 上传到 Release
 #
 # 本工作流**只构建**：不碰 tag、不碰 Release。发布与否由调用方决定。
+#
+# 插件与订阅清单不在本仓库构建：插件制品与 feed.yaml 都由 dezhishen/upkit-hub
+# 托管。本仓库只做平台，此外把一个订阅地址编进二进制（见下面的 feed-url）。
 
 on:
   workflow_call:
@@ -20,6 +23,13 @@ on:
         required: false
         type: string
         default: release-dist
+      feed-url:
+        # 地址由 CI 注入而不是写死在源码里：换成镜像、内网源或另一个清单仓库
+        # 时改这一处即可，不必动 internal/pluginfeed/builtin.go。
+        description: 编进二进制的内置订阅地址
+        required: false
+        type: string
+        default: https://github.com/dezhishen/upkit-hub/releases/latest/download/feed.yaml
 
 permissions:
   contents: read
@@ -42,32 +52,15 @@ jobs:
           cache: true
 
       - name: 构建 upkit（windows/amd64 + windows/arm64）
-        run: bash scripts/build.sh --version "${VERSION}"
-
-      - name: 构建示例插件
-        run: |
-          set -euo pipefail
-          plugin_version="${VERSION#v}"
-          for target in windows/amd64 windows/arm64; do
-            bash scripts/build-plugin.sh --release-name -v "${plugin_version}" \
-              -t "$target" ./cmd/upkit-hub
-          done
-
-      - name: 生成官方订阅清单 feed.yaml
-        run: |
-          bash scripts/gen-feed.sh \
-            --plugins-dir dist/plugins \
-            --version "${VERSION#v}" \
-            --base-url "https://github.com/${{ github.repository }}/releases/download/${VERSION}" \
-            --name "upkit-hub=upkit 示例插件集" \
-            --min-host-version "1.0.0" \
-            -o dist/feed.yaml
+        env:
+          FEED_URL: ${{ inputs.feed-url }}
+        run: bash scripts/build.sh --version "${VERSION}" --feed-url "${FEED_URL}"
 
       - name: 展示产物
         run: |
-          ls -l dist dist/plugins
-          echo "--- feed.yaml ---"
-          cat dist/feed.yaml
+          ls -l dist
+          echo "--- sha256sums.txt ---"
+          cat dist/sha256sums.txt
 
       - uses: actions/upload-artifact@v4
         with:
@@ -75,5 +68,3 @@ jobs:
           path: |
             dist/*.exe
             dist/sha256sums.txt
-            dist/feed.yaml
-            dist/plugins/*.exe

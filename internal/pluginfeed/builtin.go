@@ -7,13 +7,18 @@ import "strings"
 // 它**不会被自动启用**，也不绕过任何授权步骤 —— 内置只是省掉手输地址：
 // 订阅功能本身默认关闭，添加时仍然要确认信任该域名。
 //
-// 清单由专门的仓库 dezhishen/upkit-hub 托管，而不是放在主仓库里。放主仓库的问题
-// 很实在：清单里写死的产物地址与 sha256 必须与某一次发布严格对应，而它会和代码
-// 提交搅在一起被顺手改掉，让已发布版本的行为跟着漂移。独立仓库里只有清单，
-// 改它就是为了改清单。
+// 清单与插件产物都由 dezhishen/upkit-hub 托管，本仓库只做平台、不产清单。这样
+// 分开的原因很实在：清单里写死的产物地址与 sha256 必须与某一次插件发布严格对应，
+// 留在主仓库会跟代码提交搅在一起被顺手改掉，让已发布版本的行为跟着漂移。
+//
+// 地址取 release 附件的直链而不是 raw 分支链接：
+//   - release 附件是不可变的，upkit-hub 主分支上任何半成品提交都不会影响已发布版本；
+//   - raw 链接紧跟分支，改一行即刻对所有版本的 upkit 生效，且带 CDN 缓存。
+//
+// 代价是 upkit-hub 每更新一次清单就要发一个 release。
 const (
 	// DefaultBuiltinFeedURL 是官方订阅的默认地址。
-	DefaultBuiltinFeedURL = "https://raw.githubusercontent.com/dezhishen/upkit-hub/main/feed.yaml"
+	DefaultBuiltinFeedURL = "https://github.com/dezhishen/upkit-hub/releases/latest/download/feed.yaml"
 
 	// BuiltinFeedName 是内置订阅的展示名。
 	BuiltinFeedName = "upkit 官方源"
