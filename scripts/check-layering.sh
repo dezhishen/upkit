@@ -14,21 +14,22 @@ target="internal/tui"
 
 # ① 服务句柄的具体类型不得出现。
 #
-# 设置（*settings.Settings）是有意留的例外：它的字段由界面直接编辑，是纯内存结构、
-# 没有 IO，只有落盘走控制层。将来换 GUI 也是同一套。
+# 设置（*settings.Settings）也在内：字段、取值范围、可选项、脏标记全在控制层，界面只按
+# Kind 渲染并提交意图。将来换 GUI 也是同一套接口。
 banned=(
   '*engine.Engine'
   '*apps.File'
   '*pluginhost.Manager'
   '*pluginfeed.Store'
   '*logging.Manager'
+  '*settings.Settings'
 )
 
 # ② 界面可以依赖的领域包白名单：只有值类型与工具。
 #
 # 值类型（core.AppRef、engine.App、pluginhost.State、pluginfeed.Entry）是数据，界面
-# 拿它选颜色、算宽度都合理；不能依赖的是「拥有状态的那些包」。
-allowed='^(control|core|engine|settings|pluginfeed|pluginhost|util)$'
+# 拿它选颜色、算宽度都合理；不能依赖的是「拥有状态的那些包」。控制层是唯一入口。
+allowed='^(control|core|engine|pluginfeed|pluginhost|util)$'
 
 status=0
 

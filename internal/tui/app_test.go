@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -159,27 +160,40 @@ func TestSettingsPanel(t *testing.T) {
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.tab = tabSettings
 
-	before := m.set.Network.TimeoutSeconds
+	before := settingText(t, m, "network.timeout_seconds")
 	m = update(t, m, key('j')) // 移到「请求超时（秒）」
 	m = update(t, m, key(tea.KeyRight))
-	if m.set.Network.TimeoutSeconds == before {
+	after := settingText(t, m, "network.timeout_seconds")
+	if after == before {
 		t.Fatalf("→ 未改变数值")
 	}
-	if !m.setDirty {
+	if !m.ctrl.SettingsDirty() {
 		t.Fatalf("修改后应标记为未保存")
 	}
 
 	m = update(t, m, key('s'))
-	if err := m.set.Save(); err != nil {
-		t.Fatalf("保存失败: %v", err)
+	if m.ctrl.SettingsDirty() {
+		t.Fatalf("保存后不应仍标记为未保存")
 	}
-	reloaded, err := settings.Load(m.set.Path)
+	reloaded, err := settings.Load(m.ctrl.SettingsPath())
 	if err != nil {
 		t.Fatalf("重新加载: %v", err)
 	}
-	if reloaded.Network.TimeoutSeconds != m.set.Network.TimeoutSeconds {
-		t.Fatalf("设置未落盘: %d != %d", reloaded.Network.TimeoutSeconds, m.set.Network.TimeoutSeconds)
+	if strconv.Itoa(reloaded.Network.TimeoutSeconds) != after {
+		t.Fatalf("设置未落盘: %d != %s", reloaded.Network.TimeoutSeconds, after)
 	}
+}
+
+// settingText 取设置表单里某一项的展示文本（表单由控制层给出）。
+func settingText(t *testing.T, m Model, key string) string {
+	t.Helper()
+	for _, f := range m.settingsRows() {
+		if f.Key == key {
+			return f.Text
+		}
+	}
+	t.Fatalf("设置项 %s 不存在", key)
+	return ""
 }
 
 // 事件应进入任务面板与日志面板。

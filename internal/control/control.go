@@ -65,6 +65,9 @@ type Controller struct {
 	version    string
 	httpClient *http.Client
 
+	// settingsDirty 记「有未落盘的设置修改」。由本层记而不是界面记：改设置的是本层。
+	settingsDirty bool
+
 	events chan core.Event
 }
 
@@ -234,19 +237,6 @@ func (c *Controller) ImportManifest(ctx context.Context, path string) (added, up
 	}
 	return added, updated, nil
 }
-
-// SaveSettings 把设置落盘。
-func (c *Controller) SaveSettings() error {
-	if c.set == nil {
-		return fmt.Errorf("设置未加载")
-	}
-	return c.set.Save()
-}
-
-// ── 过渡访问器 ────────────────────────────────────────────────
-//
-// 下面这几个是给迁移中的前端暂时用的：对应子系统还没收进本层的方法。
-// 每收完一个就删一个，别在新增代码里用它们。
 
 // LogEntry 是一条日志（给界面展示用的裁剪版）。
 type LogEntry struct {

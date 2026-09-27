@@ -18,7 +18,6 @@ import (
 	"github.com/dezhishen/upkit/internal/core"
 	"github.com/dezhishen/upkit/internal/engine"
 	"github.com/dezhishen/upkit/internal/pluginfeed"
-	"github.com/dezhishen/upkit/internal/settings"
 )
 
 // tabID 是面板编号。
@@ -133,9 +132,6 @@ type Model struct {
 	// ctrl 是控制层。界面自己不持有引擎、也不建事件通道：那两件事都在这里。
 	ctrl *control.Controller
 
-	// 设置由界面直接编辑（纯内存结构，没有 IO），只有落盘走控制层。
-	set *settings.Settings
-
 	width, height int
 	tab           tabID
 
@@ -157,7 +153,6 @@ type Model struct {
 	logFollow bool
 
 	setCursor int
-	setDirty  bool
 
 	// 来源面板：插件配置的编辑入口就在插件条目上。
 	srcCursor int
@@ -201,9 +196,7 @@ func New(opts Options) Model {
 		keys:      newKeyMap(),
 		helpView:  newHelpModel(opts.NoColor),
 	}
-	// 设置由界面直接编辑（纯内存结构），所以这里取一份；落盘走控制层。
 	if c := opts.Ctrl; c != nil {
-		m.set = c.Settings()
 		for _, r := range c.LogSnapshot() {
 			m.logs = append(m.logs, logEntry{At: r.At, Level: r.Level, App: r.App, Msg: r.Msg})
 		}
@@ -768,7 +761,7 @@ func (m Model) updateOverview(key string) (tea.Model, tea.Cmd) {
 		m.busy = true
 		return m, m.exportCmd()
 	case "I":
-		path := m.set.ManifestPath()
+		path := m.ctrl.ManifestPath()
 		m.prompt = newPromptBox("导入清单", "文件路径", path, false,
 			func(mm *Model, v string) tea.Cmd { mm.busy = true; return mm.importCmd(v) })
 	}

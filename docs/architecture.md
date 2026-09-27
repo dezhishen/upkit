@@ -39,8 +39,16 @@ tui（界面）────► control（只再用 core 那边的值类型）
 
 约束由 `scripts/check-layering.sh` 钉住（已接进 `make check` 与 CI）：界面可以依赖
 值类型（`core` 的模型、`engine.App`、`pluginhost.State`、`pluginfeed.Entry`）与
-`control`，不得出现 `*engine.Engine` 之类的服务句柄。设置是有意留的例外 —— 它的字段
-由界面直接编辑，是纯内存结构、没有 IO，只有落盘走控制层。
+`control`，不得出现服务句柄（`*engine.Engine`、`*apps.File`、`*pluginhost.Manager`、
+`*pluginfeed.Store`、`*logging.Manager`、`*settings.Settings`），也不得 import 白名单
+之外的 internal 包。
+
+设置面板照这条走：字段定义、取值范围、步长、可选项、脏标记全在
+`internal/control/settings.go`，界面拿到的是 `[]control.SettingItem`（`Key` / `Label` /
+`Kind` / `Text` / `Step` / `Hint` / `Secret`），只按 `Kind` 决定怎么画，按键时按 `Key`
+提交 `AdjustSetting` / `SetSetting` / `ResetSettings` / `SaveSettings` 意图。界面不认识
+`settings.Settings` 的字段，也不知道 `network.timeout_seconds` 的取值范围是 10~600 ——
+所以加一项设置、改一个范围只动控制层，换 GUI 也不必重抄一遍。
 
 换 GUI 时只需要换掉 `internal/tui`：除 `cmd/upkit` 外没有任何地方 import 它。
 

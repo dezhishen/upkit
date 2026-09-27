@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/dezhishen/upkit/internal/control"
 	"github.com/dezhishen/upkit/internal/core"
 	"github.com/dezhishen/upkit/internal/engine"
 	"github.com/dezhishen/upkit/internal/util"
@@ -89,7 +90,7 @@ func (m Model) viewHeader(width int) string {
 		}
 	}
 	line := strings.Join(tabs, sep)
-	if m.setDirty {
+	if m.ctrl != nil && m.ctrl.SettingsDirty() {
 		line += m.theme.Warn().Render("  ● 设置未保存")
 	}
 
@@ -457,10 +458,10 @@ func (m Model) viewLogs(w, height int) string {
 
 func (m Model) viewSettings(w, height int) string {
 	var b strings.Builder
-	for i, f := range m.fields() {
+	for i, f := range m.settingsRows() {
 		focus := i == m.setCursor
-		value := f.Value()
-		if f.Kind == kindBool || f.Kind == kindEnum {
+		value := f.Text
+		if f.Kind == control.SettingBool || f.Kind == control.SettingEnum {
 			value = "‹ " + value + " ›"
 		}
 		// 标签列固定 26 列；Cell 按显示宽度补齐，中英混排也能对齐。
@@ -476,10 +477,10 @@ func (m Model) viewSettings(w, height int) string {
 	b.WriteString("\n")
 	b.WriteString(m.theme.Primary().Render("路径"))
 	b.WriteString("\n")
-	for _, kv := range m.paths() {
+	for _, kv := range m.ctrl.SettingsPaths() {
 		fmt.Fprintf(&b, "  %s %s\n", m.theme.Dim().Render(Cell(kv[0], 12)), kv[1])
 	}
-	if m.setDirty {
+	if m.ctrl.SettingsDirty() {
 		b.WriteString("\n")
 		b.WriteString(m.theme.Warn().Render("有未保存的修改，按 s 保存。"))
 	}
