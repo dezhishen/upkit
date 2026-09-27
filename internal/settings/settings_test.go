@@ -120,6 +120,107 @@ func TestNormalizeDerivesDirs(t *testing.T) {
 	}
 }
 
+// 目录项的解析规则：留空跟随根目录，填了就用填的（并展开 ~ 与相对写法）。
+//
+// 设置面板显示的就是这个结果，落盘用的「是否跟随根目录」判断（snapshot）也依赖
+// 它 —— 两处必须一致。
+func TestExpandDir(t *testing.T) {
+	root := t.TempDir()
+	s := Default()
+	s.Path = filepath.Join(root, DirConfig, FileName)
+	if err := s.Normalize(); err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+
+	custom := filepath.Join(t.TempDir(), "elsewhere")
+	cases := []struct {
+		name, in, want string
+	}{
+		{"留空跟随根目录", "", filepath.Join(root, DirData)},
+		{"只有空白也跟随根目录", "   ", filepath.Join(root, DirData)},
+		{"自定义目录原样使用", custom, custom},
+	}
+	for _, c := range cases {
+		if got := s.ExpandDir(c.in, DirData); got != c.want {
+			t.Fatalf("%s: %q -> %q，期望 %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// 首次运行（设置文件还不存在）也要拿到补全好的目录。
+//
+// 漏掉这一步的话，调用方拿到的是目录字段全空的设置：它得自己再 Normalize 一次，
+// 忘了就是「数据写进了当前目录」这类问题。
+func TestLoadMissingFileDerivesDirs(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, DirConfig, FileName)
+
+	s, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if s.Path != path {
+		t.Fatalf("Path 应指向将要创建的位置，实际 %s", s.Path)
+	}
+	if s.Storage.DataDir != filepath.Join(root, DirData) {
+		t.Fatalf("数据目录应为 %s，实际 %s", filepath.Join(root, DirData), s.Storage.DataDir)
+	}
+	if s.Logs.Dir != filepath.Join(root, DirLog) || s.Plugins.Dir != filepath.Join(root, DirPlugin) {
+		t.Fatalf("日志/插件目录未派生: %s / %s", s.Logs.Dir, s.Plugins.Dir)
+	}
+}
+
+// 首次运行落盘：Bootstrap 写出默认设置，但绝不覆盖已经存在的文件。
+//
+// 「已存在就不动」是关键：默认值覆盖用户改过的配置，比不写文件严重得多。
+func TestBootstrapKeepsExistingFile(t *testing.T) {
+	root := t.TempDir()
+	s := Default()
+	s.Path = filepath.Join(root, DirConfig, FileName)
+	if err := s.Normalize(); err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if err := s.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	if err := s.Bootstrap(); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if _, err := os.Stat(s.Path); err != nil {
+		t.Fatalf("设置文件应被写出: %v", err)
+	}
+	if s.Touch().IsZero() {
+		t.Fatalf("Touch 应返回写入后的 mtime")
+	}
+
+	if err := os.WriteFile(s.Path, []byte("network:\n  proxy: http://127.0.0.1:7890\n"), 0o644); err != nil {
+		t.Fatalf("写入: %v", err)
+	}
+	if err := s.Bootstrap(); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	got, err := Load(s.Path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Network.Proxy != "http://127.0.0.1:7890" {
+		t.Fatalf("Bootstrap 不应覆盖已有设置，实际 %q", got.Network.Proxy)
+	}
+}
+
+// 日志级别的数值序（界面与日志过滤都按它比较）。
+func TestLevelOrder(t *testing.T) {
+	s := Default()
+	for level, want := range map[string]int{
+		"trace": 0, "debug": 1, "info": 2, "warn": 3, "error": 4, "": 2, "乱七八糟": 2,
+	} {
+		s.Logs.Level = level
+		if got := s.Level(); got != want {
+			t.Fatalf("级别 %q 应为 %d，实际 %d", level, want, got)
+		}
+	}
+}
+
 // 代理与日志级别等非法值应被拒绝。
 func TestNormalizeValidation(t *testing.T) {
 	cases := []struct {
@@ -192,6 +293,9 @@ func TestTokenHelpers(t *testing.T) {
 	t.Setenv("UPKIT_TEST_TOKEN_UNSET", "secret-value")
 	if got := ResolveToken(s.Network.GitHubToken); got != "secret-value" {
 		t.Fatalf("env: 引用未解析: %q", got)
+	}
+	if got := ResolveToken("cmd:   "); got != "" {
+		t.Fatalf("cmd: 后面没写命令时应返回空，得到 %q", got)
 	}
 	if !IsSecretRef(s.Network.GitHubToken) {
 		t.Fatalf("env: 应被识别为引用而非明文")
