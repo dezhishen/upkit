@@ -439,7 +439,29 @@ func stringify(v any) string {
 }
 
 // validateID 校验软件 ID 的文件系统安全性。
+//
+// 插件来源的软件用限定 ID 写（<来源ID>/<软件ID>，见 QualifiedIDSeparator），所以这里按
+// 分隔符逐段校验，而不是直接给 "/" 开口子：每段都必须满足同一套规则，且最多两段。于是
+// ".."、空段、绝对路径、"a/b/c"（解析不出唯一来源）照旧全被拒。
 func validateID(id string) error {
+	parts := strings.Split(id, QualifiedIDSeparator)
+	if len(parts) > 2 {
+		return fmt.Errorf("id 里最多出现一个 %q（限定 ID 形如 <来源ID>%s<软件ID>）",
+			QualifiedIDSeparator, QualifiedIDSeparator)
+	}
+	for _, part := range parts {
+		if err := validateIDSegment(part); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateIDSegment 校验 ID 的其中一段。
+func validateIDSegment(id string) error {
+	if id == "" {
+		return fmt.Errorf("id 里有空的段（分隔符 %q 两侧都必须有内容）", QualifiedIDSeparator)
+	}
 	if len(id) > 64 {
 		return fmt.Errorf("id 过长（最多 64 字符）")
 	}

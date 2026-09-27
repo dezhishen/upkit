@@ -537,12 +537,16 @@ func (e *Engine) ensureNoBlockers(ctx context.Context, ref core.AppRef) error {
 
 // workDir 为本次操作创建独立临时目录。
 func (e *Engine) workDir(ref core.AppRef) (string, func(), error) {
-	dir, err := os.MkdirTemp(e.settings.Storage.TempDir, "upkit-"+ref.ID+"-")
+	// 目录名里必须净化 ID：插件软件的限定 ID 是 <来源ID>/<软件ID>，而 MkdirTemp 直接
+	// 拒收带路径分隔符的 pattern（mkdirtemp: pattern contains path separator），安装会
+	// 卡在一句「创建临时目录」上。
+	pattern := "upkit-" + util.SanitizeFileName(ref.ID) + "-"
+	dir, err := os.MkdirTemp(e.settings.Storage.TempDir, pattern)
 	if err != nil {
 		if err := util.EnsureDir(e.settings.Storage.TempDir); err != nil {
 			return "", nil, fmt.Errorf("创建临时目录: %w", err)
 		}
-		dir, err = os.MkdirTemp(e.settings.Storage.TempDir, "upkit-"+ref.ID+"-")
+		dir, err = os.MkdirTemp(e.settings.Storage.TempDir, pattern)
 		if err != nil {
 			return "", nil, fmt.Errorf("创建临时目录: %w", err)
 		}

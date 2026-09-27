@@ -1,6 +1,9 @@
 package engine
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dezhishen/upkit/internal/apps"
@@ -10,6 +13,30 @@ import (
 
 func ref(id, name, path string, entries ...string) core.AppRef {
 	return core.AppRef{ID: id, Name: name, InstallPath: path, Entrypoints: entries}
+}
+
+// 临时目录名要吃得下限定 ID（<来源ID>/<软件ID>）。
+//
+// MkdirTemp 拒收带路径分隔符的 pattern（mkdirtemp: pattern contains path separator），
+// 而限定 ID 里的 "/" 是设计的一部分，不是谁写错了 —— 不净化的话安装会卡在一句
+// 「创建临时目录」上。
+func TestWorkDirAcceptsQualifiedAppID(t *testing.T) {
+	set := settings.Default()
+	set.Storage.TempDir = filepath.Join(t.TempDir(), "temp")
+	e := &Engine{settings: set}
+
+	dir, cleanup, err := e.workDir(core.AppRef{ID: "upkit-hub/ungoogled-chromium"})
+	if err != nil {
+		t.Fatalf("workDir: %v", err)
+	}
+	defer cleanup()
+
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("临时目录应当存在: %v", err)
+	}
+	if got := filepath.Base(dir); !strings.Contains(got, "upkit-hub_ungoogled-chromium") {
+		t.Errorf("目录名应含净化后的 ID，实际 %q", got)
+	}
 }
 
 // 同一个安装目录只保留第一个条目，其余标记为遮蔽。

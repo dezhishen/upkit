@@ -89,6 +89,41 @@ func TestBuildInstallerDefaults(t *testing.T) {
 	}
 }
 
+// 插件来源的软件用限定 ID（<来源ID>/<软件ID>）写进清单，必须能通过 Build 的校验。
+//
+// 没有它，插件一加载成功界面就只剩一句「apps[0]: id 含非法字符 "/"」—— 而限定 ID 里
+// 的 "/" 是设计的一部分（QualifiedIDSeparator），不是谁写错了。
+func TestBuildAcceptsQualifiedPluginAppID(t *testing.T) {
+	f := Default()
+	f.Apps = []AppSpec{{
+		ID:      "upkit-hub/ungoogled-chromium",
+		Name:    "ungoogled-chromium",
+		Source:  map[string]any{KeyKind: SourceKindPluginPrefix + "upkit-hub"},
+		Install: InstallSpec{Path: filepath.Join(t.TempDir(), "Chromium"), Entrypoints: []string{"chrome.exe"}},
+	}}
+	refs, err := f.Build()
+	if err != nil {
+		t.Fatalf("限定 ID 应当能通过校验: %v", err)
+	}
+	if len(refs) != 1 || refs[0].ID != "upkit-hub/ungoogled-chromium" {
+		t.Fatalf("限定 ID 不应被改写: %+v", refs)
+	}
+}
+
+// 放行限定 ID 不等于给 "/" 开任意口子。
+func TestValidateIDQualifiedForms(t *testing.T) {
+	for _, id := range []string{"a/b/c", "a//b", "a/", "/b", "..", "a/..", "a/../b", "a/ b", "a/é"} {
+		if err := validateID(id); err == nil {
+			t.Errorf("id %q 应当被拒绝", id)
+		}
+	}
+	for _, id := range []string{"demo", "upkit-hub/ungoogled-chromium", "a.b/c-d_e"} {
+		if err := validateID(id); err != nil {
+			t.Errorf("id %q 应当被接受，实际 %v", id, err)
+		}
+	}
+}
+
 // 缺少 id 或安装路径应报错；重复 id 也应报错。
 func TestBuildValidation(t *testing.T) {
 	cases := map[string][]AppSpec{

@@ -14,6 +14,29 @@ import (
 
 func boolPtr(v bool) *bool { return &v }
 
+// 插件提供的软件必须能被清单层接受：两层对 ID 的规则不能各说各话。
+//
+// 这条曾经真的挂过：ToAppSpec 写出的限定 ID 含 "/"，而清单层的校验只允许字母数字与
+// -_.，于是插件一加载成功，界面就只剩一句「apps[0]: id 含非法字符 "/"」——
+// 排查时很容易以为是插件把 ID 写错了。
+func TestToAppSpecPassesManifestValidation(t *testing.T) {
+	spec := ToAppSpec(upkitplugin.Software{
+		ID:     "ungoogled-chromium",
+		Name:   "ungoogled-chromium",
+		Target: &upkitplugin.TargetHint{PathTemplate: filepath.Join(t.TempDir(), "Chromium")},
+	}, "upkit-hub", false)
+
+	f := apps.Default()
+	f.Apps = []apps.AppSpec{spec}
+	refs, err := f.Build()
+	if err != nil {
+		t.Fatalf("插件提供的软件应当能通过清单层校验: %v", err)
+	}
+	if len(refs) != 1 || refs[0].ID != "upkit-hub/ungoogled-chromium" {
+		t.Fatalf("限定 ID 不正确: %+v", refs)
+	}
+}
+
 // buildExample 编译示例插件到 dir，失败时跳过（例如离线环境）。
 func buildExample(t *testing.T, dir string) string {
 	t.Helper()
