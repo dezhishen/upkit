@@ -116,7 +116,7 @@ func TestSubscriptionStateVisible(t *testing.T) {
 	}
 
 	m := newTestModelWith(t, func(o *control.Options) { o.Feed = store })
-	m = update(t, m, key('6'))
+	m = update(t, m, key('5'))
 	m.tab = tabSources
 
 	if out := content(m); !strings.Contains(out, "已启用") {

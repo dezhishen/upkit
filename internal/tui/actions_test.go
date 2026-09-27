@@ -36,10 +36,10 @@ func TestActionsHaveUniqueKeys(t *testing.T) {
 		seen := map[string]bool{}
 		for _, a := range m.actions() {
 			if a.key == "" || a.label == "" {
-				t.Fatalf("%s：操作项缺键名或说明：%+v", tabTitles[tab], a)
+				t.Fatalf("%s：操作项缺键名或说明：%+v", tabName(tab), a)
 			}
 			if seen[a.key] {
-				t.Fatalf("%s：同一个键 %q 出现在两个按钮上", tabTitles[tab], a.key)
+				t.Fatalf("%s：同一个键 %q 出现在两个按钮上", tabName(tab), a.key)
 			}
 			seen[a.key] = true
 		}
@@ -61,7 +61,7 @@ func TestActionsHaveUniqueKeys(t *testing.T) {
 func TestActionBarButtonsAreClickable(t *testing.T) {
 	m := newTestModel(t)
 	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 30})
-	m = update(t, m, key('6')) // 来源面板：动作最多
+	m = update(t, m, key('5')) // 来源面板：动作最多
 
 	_, spans := m.viewActions(m.width)
 	if len(spans) == 0 {

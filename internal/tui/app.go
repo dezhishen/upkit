@@ -24,16 +24,45 @@ import (
 type tabID int
 
 const (
+	// 顶层页签：数字键 1..5 就是它们的下标。
 	tabOverview tabID = iota
-	tabDetail
 	tabJobs
 	tabLogs
 	tabSettings
 	tabSources
+	// tabDetail 不是顶层页签：它是概览的下级页面（回车进入、esc 返回）。
+	// 单独留一个值而不是并入 tabOverview，是因为渲染与按键处理都要按它分支。
+	tabDetail
 	tabCount
 )
 
-var tabTitles = []string{"概览", "详情", "任务", "日志", "设置", "来源"}
+// tabTitles 是标签行上的页签（顺序即显示顺序）—— 详情不在其中。
+var tabTitles = []string{"概览", "任务", "日志", "设置", "来源"}
+
+// tabName 返回任一视图的名字（含不在标签行上的详情页）。
+func tabName(t tabID) string {
+	if t == tabDetail {
+		return "详情"
+	}
+	if int(t) >= 0 && int(t) < len(tabTitles) {
+		return tabTitles[t]
+	}
+	return "?"
+}
+
+// nextTopTab 在顶层页签间循环；当前在详情页时从概览起算。
+func nextTopTab(cur tabID, delta int) tabID {
+	n := len(tabTitles)
+	idx := int(cur)
+	if cur == tabDetail || idx < 0 || idx >= n {
+		idx = 0
+		if delta < 0 {
+			idx = n - 1
+		}
+		return tabID((idx + delta + n) % n)
+	}
+	return tabID((idx + delta + n) % n)
+}
 
 // Options 构造 TUI。
 //
@@ -772,14 +801,14 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.help = true
 		m.helpOffset = 0
 		return m, nil
-	case "1", "2", "3", "4", "5", "6":
+	case "1", "2", "3", "4", "5":
 		m.tab = tabID(int(key[0] - '1'))
 		return m, nil
 	case "tab":
-		m.tab = (m.tab + 1) % tabCount
+		m.tab = nextTopTab(m.tab, 1)
 		return m, nil
 	case "shift+tab":
-		m.tab = (m.tab + tabCount - 1) % tabCount
+		m.tab = nextTopTab(m.tab, -1)
 		return m, nil
 	case "q":
 		if m.busy {
@@ -846,7 +875,7 @@ func (m Model) updateOverview(key string) (tea.Model, tea.Cmd) {
 			OnYes:   func(mm *Model) tea.Cmd { mm.busy = true; return mm.applyCmd(ids) },
 		}
 		return m, nil
-	case "p", "enter":
+	case "p":
 		if a := m.current(); a != nil {
 			if !appEnabled(a, m.ctrl) {
 				m.setStatus(a.Ref.DisplayName() + " 已停用：按空格启用后再生成计划")
@@ -855,6 +884,13 @@ func (m Model) updateOverview(key string) (tea.Model, tea.Cmd) {
 			m.busy = true
 			return m, m.planCmd(a.Ref.ID)
 		}
+	case "enter":
+		// 详情是概览的下级页面：回车进去看，esc 回来（跟其它面板里回车=打开一致）。
+		if a := m.current(); a != nil {
+			m.detailY = 0
+			m.tab = tabDetail
+		}
+		return m, nil
 	case "space":
 		return m.toggleEnabled()
 	case "h":

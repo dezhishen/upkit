@@ -28,9 +28,12 @@ func wheel(up bool) tea.MouseWheelMsg {
 }
 
 // tabHitX 返回第 i 个标签的中点列号（按与渲染相同的算法算）。
+//
+// 返回的是**屏幕**列号：界面四周有一圈边距（windowPad*），命中判定在
+// handleMouse 里才把屏幕坐标换算成界面坐标，所以这里要自己加上。
 func tabHitX(t *testing.T, m Model, i int) int {
 	t.Helper()
-	pos := 0
+	pos := windowPadX
 	for j := 0; j < i; j++ {
 		pos += Width(fmt.Sprintf(" %d %s ", j+1, tabTitles[j])) + Width(m.tabSeparator())
 	}
@@ -43,14 +46,14 @@ func TestMouseClickTabSwitchesPanel(t *testing.T) {
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	for i := range tabTitles {
-		m = update(t, m, click(tabHitX(t, m, i), 0))
+		m = update(t, m, click(tabHitX(t, m, i), windowPadY))
 		if int(m.tab) != i {
 			t.Fatalf("点第 %d 个标签应切到 %s，实际 %s", i+1, tabTitles[i], tabTitles[m.tab])
 		}
 	}
 
 	// 点标签行以外的空白处不应改变面板。
-	m = update(t, m, click(m.width-1, 0))
+	m = update(t, m, click(m.width-1, windowPadY))
 	if int(m.tab) != len(tabTitles)-1 {
 		t.Fatalf("点空白处不应切面板，实际 %s", tabTitles[m.tab])
 	}
@@ -64,21 +67,21 @@ func TestMouseRowClickAndDoubleClick(t *testing.T) {
 
 	// 内容区从第 2 行开始（第 0 行标签、第 1 行上边框），而第一行是分组标题「网络」，
 	// 所以第 1 项落在 y=3。
-	m = update(t, m, click(4, 3))
+	m = update(t, m, click(windowPadX+4, windowPadY+3))
 	if m.setCursor != 0 {
 		t.Fatalf("点第 1 项应选中它，实际 %d", m.setCursor)
 	}
 
 	// 同一位置再点一次 = 双击 = 回车：网络代理是文本项，应弹出输入框。
-	m = update(t, m, click(4, 3))
+	m = update(t, m, click(windowPadX+4, windowPadY+3))
 	if m.prompt == nil {
 		t.Fatalf("双击文本项应打开编辑框")
 	}
 
 	// 数字项双击 = 打开编辑框整段输入（预填当前值）。
 	m.prompt = nil
-	m = update(t, m, click(4, 4))
-	m = update(t, m, click(4, 4))
+	m = update(t, m, click(windowPadX+4, windowPadY+4))
+	m = update(t, m, click(windowPadX+4, windowPadY+4))
 	if m.prompt == nil {
 		t.Fatalf("双击数字项应打开编辑框")
 	}
@@ -112,14 +115,29 @@ func TestMouseClickActionBarRunsAction(t *testing.T) {
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.apps = []*engine.App{{Ref: core.AppRef{ID: "demo", Name: "Demo"}, Action: core.ActionUpdate}}
 
-	// 概览第一个按钮是 [c] 检查。
-	m = update(t, m, click(2, m.height-2))
+	// 按名字找按钮，而不是写死「第一个」—— 操作栏会随功能增删而变。
+	x := actionHitX(t, m, "检查")
+	m = update(t, m, click(x, windowPadY+m.innerHeight()-2))
 	if !m.busy {
 		t.Fatalf("点「检查」应开始检查，实际 status=%q", m.status)
 	}
 	if !strings.Contains(m.status, "检查") {
 		t.Fatalf("状态应提到检查，实际 %q", m.status)
 	}
+}
+
+// actionHitX 返回操作栏上某个按钮的中点列号（屏幕坐标）。
+func actionHitX(t *testing.T, m Model, label string) int {
+	t.Helper()
+	acts := m.actions()
+	_, spans := m.viewActions(m.innerWidth())
+	for i, a := range acts {
+		if a.label == label && i < len(spans) {
+			return windowPadX + (spans[i].start+spans[i].end)/2
+		}
+	}
+	t.Fatalf("操作栏上没有「%s」按钮：%+v", label, acts)
+	return 0
 }
 
 // 确认框上的两个按钮都能点。
@@ -155,7 +173,7 @@ func TestMouseClickOutsidePromptCancels(t *testing.T) {
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.prompt = newPromptBox("路径", "输入", "", false, nil)
 
-	m = update(t, m, click(0, 0))
+	m = update(t, m, click(windowPadX, windowPadY))
 	if m.prompt != nil {
 		t.Fatalf("点弹窗外面应取消输入")
 	}
@@ -170,15 +188,15 @@ func TestMouseClickSourceRow(t *testing.T) {
 		}
 	})
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	m = update(t, m, key('6'))
+	m = update(t, m, key('5'))
 
 	// 内容第 0 行是「插件来源」标题，第 1 行才是第一条来源。
-	m = update(t, m, click(4, 4))
+	m = update(t, m, click(windowPadX+4, windowPadY+4))
 	if m.srcCursor != 1 {
 		t.Fatalf("点第二条来源应选中第 2 行，实际 %d", m.srcCursor)
 	}
 	// 标题行不是条目，点了不该动光标。
-	m = update(t, m, click(4, 2))
+	m = update(t, m, click(windowPadX+4, windowPadY+2))
 	if m.srcCursor != 1 {
 		t.Fatalf("点分组标题不应改选中行，实际 %d", m.srcCursor)
 	}
@@ -186,7 +204,7 @@ func TestMouseClickSourceRow(t *testing.T) {
 	// 设置面板同理：分组标题占一行，点它不改选中项。
 	m.tab = tabSettings
 	m.setCursor = 1
-	m = update(t, m, click(4, 2))
+	m = update(t, m, click(windowPadX+4, windowPadY+2))
 	if m.setCursor != 1 {
 		t.Fatalf("点设置面板的分组标题不应改选中项，实际 %d", m.setCursor)
 	}

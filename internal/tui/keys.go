@@ -59,7 +59,7 @@ func newKeyMap() keyMap {
 		return keybind.NewBinding(keybind.WithKeys(keys...), keybind.WithHelp(display, desc))
 	}
 	return keyMap{
-		SwitchPanel: bAs("1-6/tab", "切换面板（也可点标签）", "1", "2", "3", "4", "5", "6", "tab", "shift+tab"),
+		SwitchPanel: bAs("1-5/tab", "切换面板（也可点标签）", "1", "2", "3", "4", "5", "tab", "shift+tab"),
 		Move:        b("上下移动", "up", "down", "j", "k"),
 		TopBottom:   b("跳到首/末", "g", "G", "home", "end"),
 		Page:        b("翻页", "pgup", "pgdown"),

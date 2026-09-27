@@ -73,17 +73,26 @@ func TestOverviewKeyFlow(t *testing.T) {
 	}
 	m.busy = false
 
-	// 计划：p 与回车等价。
+	// 计划：p 生成计划（回车不再是「计划」——它用来进详情页）。
 	m, _ = updateCmd(t, m, key('p'))
 	if !m.busy {
 		t.Fatalf("p 应开始生成计划")
 	}
 	m.busy = false
+
+	// 回车进入概览的下级页面：详情。看完整信息（备份、冲突、计划）都在那里。
 	m, _ = updateCmd(t, m, key(tea.KeyEnter))
-	if !m.busy {
-		t.Fatalf("回车应等价于 p")
+	if m.tab != tabDetail {
+		t.Fatalf("回车应进入详情，实际 %s", tabName(m.tab))
 	}
-	m.busy = false
+	if m.busy {
+		t.Fatalf("进入详情不该触发任何后台操作")
+	}
+	// esc 回到概览。
+	m = update(t, m, key(tea.KeyEscape))
+	if m.tab != tabOverview {
+		t.Fatalf("详情里 esc 应回概览，实际 %s", tabName(m.tab))
+	}
 
 	// 卸载 / 回滚：都必须先确认（危险动作不能一键落刀）。
 	m = update(t, m, key('x'))

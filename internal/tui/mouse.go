@@ -37,20 +37,24 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// 弹窗盖住了下面的界面，点击只能落到弹窗上。
+	// 弹窗按整屏坐标居中（见 overlay），所以这一步必须在扣边距之前。
 	if m.prompt != nil || m.confirm != nil || m.help {
 		return m.clickModal(ev.X, ev.Y)
 	}
 
-	switch ev.Y {
+	// 界面四周留了一圈边距（见 windowPad*），而鼠标坐标是屏幕坐标：
+	// 先减掉它，后面所有命中判定（标签、操作栏、列表行）都继续按界面自身坐标算。
+	x, y := ev.X-windowPadX, ev.Y-windowPadY
+	switch y {
 	case 0:
-		return m.clickTab(ev.X)
-	case m.height - 2:
-		if i, ok := m.actionAt(ev.X); ok {
+		return m.clickTab(x)
+	case m.innerHeight() - 2:
+		if i, ok := m.actionAt(x); ok {
 			return m.runAction(i)
 		}
 		return m, nil
 	}
-	return m.clickBody(ev.X, ev.Y)
+	return m.clickBody(x, y)
 }
 
 // scrollStep 是一次滚轮滚过的行数。

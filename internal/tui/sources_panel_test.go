@@ -26,7 +26,7 @@ func TestSourcesPanelRendersPluginRows(t *testing.T) {
 		}}
 	})
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	m = update(t, m, key('6'))
+	m = update(t, m, key('5'))
 
 	view := content(m)
 	if !strings.Contains(view, "企业源") {
@@ -52,7 +52,7 @@ func TestSourcesPanelOpensPluginConfig(t *testing.T) {
 		o.Apps.Sources = []apps.SourceSpec{{ID: "corp-index", Name: "企业源", Kind: "plugin"}}
 	})
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	m = update(t, m, key('6'))
+	m = update(t, m, key('5'))
 	m = update(t, m, key(tea.KeyEnter))
 
 	if m.cfgFor != "corp-index" {
@@ -79,7 +79,7 @@ func TestSubscriptionAuthorizationFlow(t *testing.T) {
 	m := newTestModelWith(t, func(o *control.Options) { o.Feed = store })
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	m = update(t, m, key('6'))
+	m = update(t, m, key('5'))
 	m = update(t, m, key('a'))
 
 	if store.FeatureAuthorized() {
@@ -108,7 +108,7 @@ func TestBuiltinFeedEntry(t *testing.T) {
 	m := newTestModelWith(t, func(o *control.Options) { o.Feed = store })
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	m = update(t, m, key('6'))
+	m = update(t, m, key('5'))
 	m = update(t, m, key('o'))
 
 	// 订阅功能默认关闭：先确认启用。
@@ -154,7 +154,7 @@ func TestRemoveSubscriptionOnlyAppliesToSubscriptionRows(t *testing.T) {
 	})
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	m = update(t, m, key('6'))
+	m = update(t, m, key('5'))
 	m = update(t, m, key('d'))
 
 	if m.confirm != nil {
@@ -174,7 +174,7 @@ func TestToggleSourceWritesBackToManifest(t *testing.T) {
 	})
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	m = update(t, m, key('6'))
+	m = update(t, m, key('5'))
 	// 空格：真实按键是 KeyRunes，字符串为 " "（bubbletea 也可能给 KeySpace，两种都要认）。
 	m = update(t, m, key(' '))
 
@@ -261,7 +261,7 @@ func TestTrustSourceWritesManifest(t *testing.T) {
 	wantSHA := m.sourceRows()[0].info.SHA256
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	m = update(t, m, key('6'))
+	m = update(t, m, key('5'))
 	m = update(t, m, key('t'))
 
 	if m.confirm == nil {
@@ -301,7 +301,7 @@ func TestToggleDiscoveredSourceExplainsTrust(t *testing.T) {
 	m, _ := newSourcesTestModel(t, t.TempDir(), "corp-index")
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	m = update(t, m, key('6'))
+	m = update(t, m, key('5'))
 	m = update(t, m, key(' '))
 
 	if !strings.Contains(m.status, "按 t 信任") {
@@ -343,7 +343,7 @@ func TestReloadSourcesReadsManifestFromDisk(t *testing.T) {
 	}
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	m = update(t, m, key('6'))
+	m = update(t, m, key('5'))
 	m = update(t, m, key('r'))
 
 	// 手改的内容要真的进得来：面板上多出这条来源就说明清单被重读了。

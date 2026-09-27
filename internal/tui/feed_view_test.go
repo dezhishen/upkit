@@ -30,7 +30,7 @@ func feedTestModel(t *testing.T, entries ...pluginfeed.Entry) Model {
 	m.feedFor = "https://example.com/plugins.yaml"
 	m.feedLoaded = true
 	m.feedEntries = entries
-	m = update(t, m, key('6')) // 切到「来源」页，按键才会分发到订阅详情
+	m = update(t, m, key('5')) // 切到「来源」页，按键才会分发到订阅详情
 	return m
 }
 

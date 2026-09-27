@@ -44,11 +44,11 @@ func (m Model) render() string {
 		m.height = 24
 	}
 
-	head := m.viewHeader(m.width)
-	actions, _ := m.viewActions(m.width)
-	foot := m.viewFooter(m.width)
-	bodyH := m.bodyHeight()
-	base := head + "\n" + m.viewBody(m.width, bodyH) + "\n" + actions + "\n" + foot
+	w := m.innerWidth()
+	head := m.viewHeader(w)
+	actions, _ := m.viewActions(w)
+	foot := m.viewFooter(w)
+	base := m.padBlock(head + "\n" + m.viewBody(w, m.bodyHeight()) + "\n" + actions + "\n" + foot)
 
 	switch {
 	case m.prompt != nil:
@@ -61,24 +61,80 @@ func (m Model) render() string {
 	return base
 }
 
+// 界面与终端边缘之间的间隔。
+//
+// 贴着边上的界面看着很挤，尤其是左侧：标签行与边框直接顶到窗口边界。
+// 只留一格（左右各一列、上下各一行），大屏上看不出浪费，小终端上又不至于占太多。
+const (
+	windowPadX = 1
+	windowPadY = 1
+)
+
+// innerWidth / innerHeight 返回界面本体可用的尺寸（已扣掉四周间隔）。
+//
+// 渲染、正文高度、鼠标命中都必须用同一套值 —— 分开算的话，多出来的那圈边距
+// 会让点击位置整体偏移一格。
+func (m Model) innerWidth() int {
+	w := m.width - 2*windowPadX
+	if w < 8 {
+		w = 8
+	}
+	return w
+}
+
+func (m Model) innerHeight() int {
+	h := m.height - 2*windowPadY
+	if h < 6 {
+		h = 6
+	}
+	return h
+}
+
+// padBlock 给界面正文套上四周间隔，并规整成恰好 m.width × m.height 的块。
+//
+// 规整成整屏尺寸是为了弹窗图层：Compositor 需要一个盖满屏幕的背景，
+// 否则弹窗底下会露出一块没被调暗的空白。
+func (m Model) padBlock(inner string) string {
+	innerW, innerH := m.innerWidth(), m.innerHeight()
+	lines := strings.Split(inner, "\n")
+	if len(lines) > innerH {
+		lines = lines[:innerH]
+	}
+	left := strings.Repeat(" ", windowPadX)
+	blank := strings.Repeat(" ", m.width)
+	out := make([]string, 0, m.height)
+	for i := 0; i < windowPadY; i++ {
+		out = append(out, blank)
+	}
+	for _, l := range lines {
+		// 先截到可用宽度再补齐：先算 padding 的话，超宽的行会因为 pad 被夹到 0
+		// 而整行溢出（窄终端上会折行）。
+		body := Truncate(l, innerW)
+		pad := m.width - windowPadX - Width(body)
+		if pad < 0 {
+			pad = 0
+		}
+		out = append(out, left+body+strings.Repeat(" ", pad))
+	}
+	for len(out) < m.height {
+		out = append(out, blank)
+	}
+	return strings.Join(out, "\n")
+}
+
 // overlay 把弹窗居中压在正文上，正文整体调暗。
+//
+// 弹窗按整屏尺寸居中：它本来就该浮在最上层，不必被那圈边距约束。
 func (m Model) overlay(base, modal string) string {
 	return m.theme.Overlay(m.theme.Dimmed(base), modal, m.width, m.height)
 }
 
-// bodyHeight 返回正文面板的可用高度：总高减去头部、操作栏与底栏各占的行数。
+// bodyHeight 返回正文面板的可用高度：总高（扣掉四周间隔）减去头部、操作栏与底栏。
 //
 // 单独拿出来是因为按键处理也得知道「一屏能放几行」—— 设置面板要据此把光标留在可见
 // 范围内，而按键处理里根本没有渲染时的那个 bodyH。
 func (m Model) bodyHeight() int {
-	h := m.height
-	if h <= 0 {
-		h = 24
-	}
-	w := m.width
-	if w <= 0 {
-		w = 80
-	}
+	w, h := m.innerWidth(), m.innerHeight()
 	body := h - countLines(m.viewHeader(w)) - actionsHeight(m, w) - countLines(m.viewFooter(w))
 	if body < 4 {
 		body = 4
@@ -108,15 +164,24 @@ func countLines(s string) int {
 func (m Model) viewHeader(width int) string {
 	sep := m.theme.Dim().Render(m.tabSeparator())
 	tabs := make([]string, 0, len(tabTitles))
+	// 在详情页时高亮「概览」：详情是它的下级，不是一个平行页签。
+	active := m.tab
+	if active == tabDetail {
+		active = tabOverview
+	}
 	for i, t := range tabTitles {
 		label := fmt.Sprintf(" %d %s ", i+1, t)
-		if tabID(i) == m.tab {
+		if tabID(i) == active {
 			tabs = append(tabs, m.theme.SelectedRow().Render(label))
 		} else {
 			tabs = append(tabs, m.theme.Dim().Render(label))
 		}
 	}
 	line := strings.Join(tabs, sep)
+	if m.tab == tabDetail {
+		line += m.theme.Dim().Render(m.tabSeparator()) +
+			m.theme.Primary().Render(fmt.Sprintf(" %s ", tabName(tabDetail)))
+	}
 	if m.ctrl != nil && m.ctrl.SettingsDirty() {
 		line += m.theme.Warn().Render("  ● 设置未保存")
 	}
@@ -218,7 +283,7 @@ func (m Model) viewOverview(w, height int) string {
 					"之后启动就快了（本地缓存）。", w, height, true)
 		}
 		return m.theme.Frame("概览",
-			"还没有任何软件。\n\n到「来源」面板（点上面的标签或按 6），\n在底部操作栏里选「官方源」，软件会随源一起出现。",
+			"还没有任何软件。\n\n到「来源」面板（点上面的标签或按 5），\n在底部操作栏里选「官方源」，软件会随源一起出现。",
 			w, height, true)
 	}
 

@@ -85,7 +85,7 @@ func TestRenderAllTabs(t *testing.T) {
 	m := newTestModel(t)
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
-	for i := 1; i <= int(tabCount); i++ {
+	for i := 1; i <= len(tabTitles); i++ {
 		m = update(t, m, key(rune('0'+i)))
 		out := content(m)
 		if strings.TrimSpace(out) == "" {
@@ -94,6 +94,21 @@ func TestRenderAllTabs(t *testing.T) {
 		if !strings.Contains(out, tabTitles[i-1]) {
 			t.Fatalf("面板 %d 未显示标题 %q:\n%s", i, tabTitles[i-1], out)
 		}
+	}
+
+	// 详情不在标签行上：它是概览的下级页面（有个软件才能进）。
+	m = update(t, m, key('1'))
+	m.apps = []*engine.App{demoApp(core.ActionNoOp)}
+	m = update(t, m, key(tea.KeyEnter))
+	if m.tab != tabDetail {
+		t.Fatalf("概览里回车应进入详情，实际 %s", tabName(m.tab))
+	}
+	if out := content(m); !strings.Contains(out, "详情") {
+		t.Fatalf("详情页应有自己的标题：\n%s", out)
+	}
+	m = update(t, m, key(tea.KeyEscape))
+	if m.tab != tabOverview {
+		t.Fatalf("详情里 esc 应回概览，实际 %s", tabName(m.tab))
 	}
 }
 
@@ -358,7 +373,7 @@ func TestNoColorEmitsNoColorANSI(t *testing.T) {
 
 	for _, tab := range []tabID{tabOverview, tabDetail, tabJobs, tabLogs, tabSettings, tabSources} {
 		m.tab = tab
-		assertNoColor("面板 "+tabTitles[tab], content(m))
+		assertNoColor("面板 "+tabName(tab), content(m))
 	}
 
 	m.help = true

@@ -130,15 +130,15 @@ func TestPanelTitleInTopBorder(t *testing.T) {
 	m.apps = []*engine.App{{Ref: core.AppRef{ID: "git", Name: "Git"}, Action: core.ActionNoOp}}
 	m = update(t, m, tea.WindowSizeMsg{Width: 90, Height: 20})
 
-	for i := 0; i < int(tabCount); i++ {
+	for i, title := range tabTitles {
 		m.tab = tabID(i)
 		lines := strings.Split(content(m), "\n")
-		// 头部只有一行（标签行），第 1 行应为板块的上边框。
-		if !strings.Contains(lines[0], tabTitles[i]) {
-			t.Fatalf("面板 %s 的标签未出现在第 0 行:\n%s", tabTitles[i], lines[0])
+		// 最上一行是界面与终端之间的间隔，接着才是标签行；再下一行是板块上边框。
+		if !strings.Contains(lines[windowPadY], title) {
+			t.Fatalf("面板 %s 的标签未出现在标签行:\n%s", title, lines[windowPadY])
 		}
-		if !strings.Contains(lines[1], tabTitles[i]) {
-			t.Fatalf("面板 %s 的标题未出现在上边框（第 1 行）:\n%s", tabTitles[i], lines[1])
+		if !strings.Contains(lines[windowPadY+1], title) {
+			t.Fatalf("面板 %s 的标题未出现在上边框:\n%s", title, lines[windowPadY+1])
 		}
 	}
 }
