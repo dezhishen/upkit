@@ -190,23 +190,21 @@ make build-all FEED_URL=https://mirror.internal/upkit/feed.yaml
 
 ### 本仓库里保留的插件工具
 
-下面几样仍在源码树里，但**发布流水线不再构建或发布它们**：
+下面这些仍在源码树里，但**发布流水线不构建、也不发布它们**：
 
 | 路径 | 用途 |
 | --- | --- |
 | `cmd/upkit-hub/` | 官方插件的可运行样例，供测试与开发参考 |
 | `cmd/upkit-plugin-example/` | 最小起步样例，`docs/plugin-dev.md` 的实操对象 |
-| `scripts/build-plugin.sh` | 第三方插件的构建入口 |
-| `scripts/gen-feed.sh` | 清单生成器，待 upkit-hub 建好后搬过去 |
 
-`gen-feed.sh` 不依赖本仓库的任何东西 —— 只吃一个插件产物目录与 `--base-url`，所以
-搬到 upkit-hub 后把 `--base-url` 指向 upkit-hub 自己的 release 即可。生成前它会检查
-**每个插件是否覆盖了全部受支持平台**：漏一个架构，那个架构的用户会在「校验订阅」
-这一步失败，而这本可以在发布前发现；确实有意只发部分架构时用 `--allow-partial` 跳过。
+插件构建脚本（`scripts/build-plugin.sh`）与清单生成器（`scripts/gen-feed.sh`）已搬到
+[`dezhishen/upkit-hub`](https://github.com/dezhishen/upkit-hub)，盯着生成器的测试
+（原 `internal/pluginfeed/gen_feed_test.go`）也一并搬走 —— 它们要校验的产物与清单都
+在那边，留在本仓库只会两处漂移。
 
-`internal/pluginfeed` 里有测试盯着这条链路：脚本产出的清单必须能被宿主解析、通过
-校验、摘要与产物一致；脚本里写死的平台列表也有一致性检查，与代码漂移会报警。这几个
-测试应当跟着脚本一起搬走。
+搬过去之后生成器仍做同一件事：检查**每个插件是否覆盖了全部受支持平台** —— 漏一个
+架构，那个架构的用户会在「校验订阅」这一步失败，而这本可以在发布前发现；确实有意只发
+部分架构时用 `--allow-partial` 跳过。
 
 
 ## 5. changelog 怎么来的
@@ -287,14 +285,21 @@ make next-version BUMP=minor STAGE=rc    # 看看下一个版本号是多少
 bash scripts/build.sh --version v1.2.3   # 本地构建（可加 --feed-url 换订阅源）
 ```
 
-把订阅链路整个走一遍（这部分将来归 upkit-hub，现在仍可在本仓库验证）：
+把订阅链路整个走一遍（构建脚本与清单生成器现在都在 upkit-hub）：
 
 ```bash
-bash scripts/build-plugin.sh --release-name -v 1.2.3 -t windows/amd64 ./cmd/upkit-hub
-bash scripts/gen-feed.sh --plugins-dir dist/plugins --version 1.2.3 \
-  --base-url https://example.com/dl -o dist/feed.yaml
+cd /path/to/upkit-hub
+make release-local BASE_URL=https://127.0.0.1:8443   # 构建 + 生成 dist/release/feed.yaml + 校验
+make serve                                           # 本地 https 静态服务（自签证书）
 ```
 
-拿生成的 `feed.yaml` 起一个静态服务器，在 upkit 的「来源」面板里添加它，
-就能验证安装/更新流程。
+然后在 upkit 里用这张自签证书跑起来（宿主的订阅地址解析拒绝明文 http，所以本地也得
+是 https；不需要把证书装进系统信任库）：
+
+```bash
+make build-dev
+SSL_CERT_FILE=/path/to/upkit-hub/dist/serve/ca.crt ./dist/upkit-dev
+```
+
+在「来源」面板里添加 `https://127.0.0.1:8443/feed.yaml`，就能验证安装/更新流程。
 

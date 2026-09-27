@@ -51,10 +51,16 @@ func main() {
 
 ## 2. 构建与部署
 
+交叉编译到 Windows（upkit 宿主是 Windows 时插件也必须是 .exe）：
+
 ```bash
-# 交叉编译到 Windows（upkit 宿主是 Windows 时插件也必须是 .exe）
-bash scripts/build-plugin.sh -t windows/amd64 ./path/to/my-plugin
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
+  -ldflags "-s -w -X main.version=1.0.0" -o my-source.exe ./path/to/my-plugin
 ```
+
+> 发布用的封装脚本 `scripts/build-plugin.sh`（自动补平台后缀、注入版本号）现在在
+> [upkit-hub](https://github.com/dezhishen/upkit-hub) 里 —— 官方源的发布流水线用的
+> 就是它，本仓库不再保留一份。
 
 部署到 upkit 的 `plugin/` 目录（与 `upkit.exe` 同级）：
 
@@ -290,13 +296,15 @@ return nil, fmt.Errorf("%w: 缺少 download_base", plugin.ErrBadConfig)
 ## 9. 调试
 
 ```bash
-# 单独构建，确认能编译
-bash scripts/build-plugin.sh -t windows/amd64 ./cmd/my-plugin
+# 单独构建，确认能编译（开发机上交叉编译到 Windows）
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o dist/my-plugin.exe ./cmd/my-plugin
 
-# 在开发机上直接构建（默认为 windows/amd64）
-bash scripts/build-plugin.sh ./cmd/upkit-plugin-example
-# 输出会提示把它放进 plugin/ 并配置 trust
+# 当前平台的产物（仅开发机冒烟用）
+go build -o dist/my-plugin ./cmd/upkit-plugin-example
 ```
+
+把产物放进 upkit 的 `plugin/` 目录，同时配一个 `my-plugin.plugin.yaml` 并写好 trust，
+才能被宿主加载 —— 见上面第 2、3 节。
 
 插件进程的 stdout/stderr 会带 `plugin=...` 前缀写进 upkit 日志（`log/upkit-*.jsonl`），
 排查启动失败时先看这里。

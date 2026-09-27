@@ -162,24 +162,22 @@ go build -ldflags "-X github.com/dezhishen/upkit/internal/pluginfeed.BuiltinFeed
 
 ### 发布官方源
 
-官方清单与插件产物都由 `dezhishen/upkit-hub` 托管，**主仓库不发布它们**。在那里：
+官方清单与插件产物都由 `dezhishen/upkit-hub` 托管，**主仓库不发布它们** ——
+脚本与流水线也都放在那边（本仓库只做平台）：
 
 ```bash
-# 1. 构建插件产物
-bash scripts/build-plugin.sh --release-name -v <版本> -t windows/amd64 ./cmd/upkit-hub
+# 在 upkit-hub 仓库里，一条命令构建两个架构并生成清单：
+make release-local BASE_URL=https://github.com/dezhishen/upkit-hub/releases/download/v1.2.3
 
-# 2. 生成清单（--base-url 指向 upkit-hub 自己的 release 下载地址）
-bash scripts/gen-feed.sh --plugins-dir dist/plugins --version <版本> \
-  --base-url https://github.com/dezhishen/upkit-hub/releases/download/<tag> -o feed.yaml
-
-# 3. 产物与 feed.yaml 一起上传到 upkit-hub 的 Release
-#    产物文件名保持 upkit-hub-<os>-<arch>[.exe]，feed.yaml 里填真实 sha256
+# 等价的手工步骤：
+bash scripts/build-plugin.sh --release-name -v 1.2.3 -t windows/amd64 ./cmd/upkit-hub
+bash scripts/gen-feed.sh --plugins-dir dist/plugins --version 1.2.3 \
+  --base-url https://github.com/dezhishen/upkit-hub/releases/download/v1.2.3 -o feed.yaml
 ```
 
-清单与产物同一次发布、同一个 tag，因此不存在「清单比产物新」的窗口。
-
-> `build-plugin.sh` 与 `gen-feed.sh` 目前仍在主仓库的 `scripts/` 下（供本地验证
-> 使用），等 upkit-hub 建好后连同 `internal/pluginfeed` 里对应的测试一起搬过去。
+打 tag 即发布：那边的工作流会把两个架构的产物连同 `feed.yaml` 一起挂到 Release 上
+（附件名必须精确，`feed.yaml` 不能改名）。清单与产物同一次发布、同一个 tag，因此
+不存在「清单比产物新」的窗口。
 
 ## 8. 边界与未尽事项
 
