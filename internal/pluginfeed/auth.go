@@ -192,10 +192,13 @@ func (s *Store) subscriptionLocked(rawURL string) (Subscription, bool) {
 	return Subscription{}, false
 }
 
-// AddSubscription 添加订阅并授权其域名。
+// AddSubscription 添加订阅并记下它的域名。
 //
 // 调用它即代表**用户在界面上确认过**「信任来自该域名的插件下载」；这里再校验一次
 // 地址合法性并记录域名，供后续审计与撤销。
+//
+// 它不负责授权跨域下载：同源的包地址不需要额外授权，跨域的域名由 AuthorizeHost
+// 单独记录（见 NeedsAuthorization）。
 //
 // 功能开关在这里再强制一次：默认关闭，仅靠界面不点按钮是不够的。
 func (s *Store) AddSubscription(rawURL string) (Subscription, error) {

@@ -112,6 +112,7 @@ jobs:
           check ./internal/method        65
           check ./internal/method/plugin 90
           check ./internal/tui           60
+          check ./internal/control      85
           check ./internal/source/githubrelease 78
 
           exit $fail

@@ -59,9 +59,11 @@ func (c *Controller) HasBuiltinSubscription() bool {
 	return false
 }
 
-// AddSubscription 添加一条订阅并授权其域名（三级授权里的第 ② 级）。
+// AddSubscription 添加一条订阅（三级授权里的第 ② 级：信任这个订阅来源）。
 //
-// 调用方必须已经拿到用户对「信任该域名的插件下载」的确认 —— 这里不做询问。
+// 调用方必须已经拿到用户对该地址的确认 —— 这里不做询问。注意它**不**等于授权跨域
+// 下载：包地址与订阅同源时本来就不需要额外授权，跨域的域名要单独走 AuthorizeHost
+// （第 ③ 级）。
 func (c *Controller) AddSubscription(rawURL string) (pluginfeed.Subscription, error) {
 	if c.feed == nil {
 		return pluginfeed.Subscription{}, fmt.Errorf("订阅模块未启用")
