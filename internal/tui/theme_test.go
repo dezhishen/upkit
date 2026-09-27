@@ -7,7 +7,7 @@ import (
 
 // 面板标题必须嵌在上边框里，且整块宽度恰好等于给定宽度。
 func TestFrameTitleInsideTopBorder(t *testing.T) {
-	th := NewTheme(false, false, "unicode")
+	th := NewTheme(ThemeOptions{ASCII: false, NoColor: false, Borders: "unicode"})
 	out := th.Frame("概览", "内容", 40, 6, true)
 
 	lines := strings.Split(out, "\n")
@@ -30,7 +30,7 @@ func TestFrameTitleInsideTopBorder(t *testing.T) {
 // ASCII 与直角边框下同样要把标题嵌进上边框。
 func TestFrameTitleAllBorderStyles(t *testing.T) {
 	for _, name := range []string{"unicode", "square", "ascii"} {
-		th := NewTheme(false, false, name)
+		th := NewTheme(ThemeOptions{Borders: name})
 		out := th.Frame("任务", "x", 30, 4, false)
 		if !strings.Contains(strings.Split(out, "\n")[0], "任务") {
 			t.Fatalf("边框样式 %s 下标题未嵌入上边框:\n%s", name, out)
@@ -40,7 +40,7 @@ func TestFrameTitleAllBorderStyles(t *testing.T) {
 
 // 长标题不得撑破边框。
 func TestFrameLongTitleTruncated(t *testing.T) {
-	th := NewTheme(false, false, "unicode")
+	th := NewTheme(ThemeOptions{ASCII: false, NoColor: false, Borders: "unicode"})
 	out := th.Frame(strings.Repeat("很长的标题", 10), "x", 30, 4, true)
 	for i, l := range strings.Split(out, "\n") {
 		if got := Width(l); got != 30 {
@@ -70,7 +70,7 @@ func TestCellUsesDisplayWidth(t *testing.T) {
 
 // 弹窗必须叠在背景之上，且底下的内容仍然存在。
 func TestOverlayKeepsBackground(t *testing.T) {
-	th := NewTheme(false, false, "unicode")
+	th := NewTheme(ThemeOptions{ASCII: false, NoColor: false, Borders: "unicode"})
 	base := strings.Join([]string{
 		"背景第一行",
 		"背景第二行",
@@ -95,7 +95,7 @@ func TestOverlayKeepsBackground(t *testing.T) {
 
 // 无颜色模式下 Dimmed 不应引入颜色转义。
 func TestDimmedNoColor(t *testing.T) {
-	th := NewTheme(false, true, "unicode")
+	th := NewTheme(ThemeOptions{ASCII: false, NoColor: true, Borders: "unicode"})
 	if got := th.Dimmed("文本"); strings.ContainsRune(got, 0x1b) {
 		t.Fatalf("禁用颜色后 Dimmed 仍输出转义: %q", got)
 	}

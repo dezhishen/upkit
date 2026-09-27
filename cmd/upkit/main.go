@@ -6,7 +6,8 @@
 //	upkit.exe --print-paths       # 打印便携目录布局后退出（不需要终端）
 //	upkit.exe --config D:\x\config\settings.yaml
 //	upkit.exe --log-level debug --no-color --ascii
-//	upkit.exe --no-mouse            # 关掉鼠标上报，保留终端原生拖选复制
+//	upkit.exe --theme light       # 白底终端看不清时强制用浅色一套
+//	upkit.exe --no-mouse          # 关掉鼠标上报，保留终端原生拖选复制
 //	upkit.exe --version           # 打印版本信息
 package main
 
@@ -44,6 +45,14 @@ var (
 	date    = "unknown"
 )
 
+// themeName 决定用哪套配色：命令行 > 设置文件 > auto。
+func themeName(cli, fromSettings string) string {
+	if v := strings.TrimSpace(cli); v != "" {
+		return v
+	}
+	return strings.TrimSpace(fromSettings)
+}
+
 func main() {
 	var (
 		configPath = flag.String("config", "", "设置文件路径（默认 "+defaultConfigPath()+"）")
@@ -52,6 +61,7 @@ func main() {
 		noColor    = flag.Bool("no-color", false, "禁用颜色输出")
 		asciiUI    = flag.Bool("ascii", false, "仅使用 ASCII 字符绘制界面")
 		noMouse    = flag.Bool("no-mouse", false, "关闭鼠标支持（保留终端原生的拖选复制与右键粘贴）")
+		theme      = flag.String("theme", "", "配色方向：auto|dark|light（覆盖设置文件）")
 		focusMode  = flag.Bool("focus", false, "以无标题栏的焦点模式重新启动（仅 Windows Terminal）")
 		showVer    = flag.Bool("version", false, "打印版本并退出")
 		showPaths  = flag.Bool("print-paths", false, "打印目录布局与配置文件位置后退出")
@@ -99,6 +109,7 @@ func main() {
 		noColor:    *noColor,
 		ascii:      *asciiUI,
 		noMouse:    *noMouse,
+		theme:      *theme,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, "upkit:", err)
 		os.Exit(1)
@@ -113,6 +124,8 @@ type optionSet struct {
 	noColor    bool
 	ascii      bool
 	noMouse    bool
+	// theme 是配色方向（auto/dark/light）；空表示用设置文件里的值。
+	theme string
 }
 
 // run 装配设置、清单、日志、引擎并进入 TUI。
@@ -221,6 +234,7 @@ func run(opts optionSet) error {
 		ASCII:      opts.ascii,
 		NoMouse:    opts.noMouse,
 		Borders:    set.UI.Borders,
+		Theme:      themeName(opts.theme, set.UI.Theme),
 		ConfigPath: set.Path,
 	})
 	// bubbletea v2 起，终端特性（备用屏幕、鼠标模式、窗口标题）改由 View 的字段声明，

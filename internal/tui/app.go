@@ -77,6 +77,8 @@ type Options struct {
 	NoColor bool
 	ASCII   bool
 	Borders string // unicode | square | ascii
+	// Theme 是配色方向：auto（默认，按终端背景猜）/ dark / light。
+	Theme string
 	// NoMouse 关掉鼠标上报。
 	//
 	// 开着鼠标上报时，终端的原生选择与右键粘贴会被程序接管，习惯拖选复制的人会
@@ -241,9 +243,14 @@ type Model struct {
 // New 构造模型。
 func New(opts Options) Model {
 	m := Model{
-		opts:      opts,
-		ctrl:      opts.Ctrl,
-		theme:     NewTheme(opts.ASCII, opts.NoColor, opts.Borders),
+		opts: opts,
+		ctrl: opts.Ctrl,
+		theme: NewTheme(ThemeOptions{
+			ASCII:   opts.ASCII,
+			NoColor: opts.NoColor,
+			Borders: opts.Borders,
+			Variant: opts.Theme,
+		}),
 		logLevel:  "info",
 		logFollow: true,
 		status:    "在底部操作栏里选动作，按 ? 看全部键位",
@@ -602,14 +609,44 @@ func (m *Model) appendLog(e logEntry) {
 	}
 }
 
+// logLevelStyle 给日志级别上色：info 中性、debug/trace 压暗、warn/error 报警。
+func (m Model) logLevelStyle(level string) lipgloss.Style {
+	switch strings.ToLower(level) {
+	case "error", "fatal":
+		return m.theme.ErrBold()
+	case "warn", "warning":
+		return m.theme.WarnBold()
+	case "debug", "trace":
+		return m.theme.Dim()
+	default:
+		return m.theme.PrimaryPlain()
+	}
+}
+
+// logMessageStyle 只给错误正文上色 —— 警告的正文仍有阅读价值，压成红色反而看不清。
+func (m Model) logMessageStyle(level string) lipgloss.Style {
+	switch strings.ToLower(level) {
+	case "error", "fatal":
+		return m.theme.Err()
+	default:
+		return lipgloss.NewStyle()
+	}
+}
+
 func (m *Model) refreshLogView() {
 	lines := make([]string, 0, len(m.logs))
 	for _, l := range m.logs {
 		if !m.logVisible(l) {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("%s %s %s %s",
-			l.At.Format("15:04:05"), Cell(strings.ToUpper(l.Level), 5), Cell(l.App, 12), l.Msg))
+		// 级别单独上色：日志里最该一眼挑出来的就是 error/warn，
+		// 时间戳与应用名压暗，正文保持阅读色。
+		lines = append(lines, strings.Join([]string{
+			m.theme.Dim().Render(l.At.Format("15:04:05")),
+			m.logLevelStyle(l.Level).Render(Cell(strings.ToUpper(l.Level), 5)),
+			m.theme.Dim().Render(Cell(l.App, 12)),
+			m.logMessageStyle(l.Level).Render(l.Msg),
+		}, " "))
 	}
 	m.logView.SetContent(strings.Join(lines, "\n"))
 	if m.logFollow {

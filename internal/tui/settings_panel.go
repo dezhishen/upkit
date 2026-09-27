@@ -111,6 +111,7 @@ func (m Model) updateSettings(key string) (tea.Model, tea.Cmd) {
 			m.setStatusErr(err)
 			return m, nil
 		}
+		m.applyThemeSetting()
 		m.setStatus("已保存到 " + m.ctrl.SettingsPath() + "（部分项重启后生效）")
 		return m, nil
 	case "D":
@@ -153,6 +154,46 @@ func (m *Model) adjustSetting(delta int) {
 	}
 	if err := m.ctrl.AdjustSetting(f.Key, delta); err != nil {
 		m.setStatusErr(err)
+		return
+	}
+	// 配色这类「改了就该看见」的设置要立刻生效：改完什么也没发生，用户会以为
+	// 这个选项是坏的。
+	m.applyThemeSetting()
+}
+
+// applyThemeSetting 把设置里的显示选项（配色方向、边框样式）应用到当前主题。
+//
+// 这些项改了就该当场看见效果：否则用户改完什么也没发生，会以为选项是坏的。
+// ASCII / 无颜色这两项来自命令行，不走设置，重建时按现值带上。
+func (m *Model) applyThemeSetting() {
+	if m.ctrl == nil {
+		return
+	}
+	// 从表单里取当前值：枚举项的「当前是什么」就写在表单上，
+	// 控制层不额外提供按 key 读枚举的接口。
+	variant, borders := "", ""
+	for _, f := range m.settingsRows() {
+		switch f.Key {
+		case "ui.theme":
+			variant = strings.TrimSpace(f.Text)
+		case "ui.borders":
+			borders = strings.TrimSpace(f.Text)
+		}
+	}
+	if variant == "" {
+		variant = m.theme.Variant()
+	}
+	if borders == "" {
+		borders = m.theme.Borders
+	}
+	next := NewTheme(ThemeOptions{
+		ASCII:   m.theme.ASCII,
+		NoColor: m.theme.NoColor,
+		Borders: borders,
+		Variant: variant,
+	})
+	if next.Variant() != m.theme.Variant() || next.Borders != m.theme.Borders {
+		m.theme = next
 	}
 }
 

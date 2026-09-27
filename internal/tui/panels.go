@@ -188,7 +188,6 @@ func (m Model) viewHeader(width int) string {
 
 	counts := m.counts()
 	if counts != "" {
-		counts = m.theme.Dim().Render(counts)
 		if gap := width - Width(line) - Width(counts); gap >= 2 {
 			line += strings.Repeat(" ", gap) + counts
 		}
@@ -235,12 +234,23 @@ func (m Model) counts() string {
 			pend++
 		}
 	}
-	line := fmt.Sprintf("已安装 %d · 可更新 %d · 待安装 %d", inst, upd, pend)
+	// 统计按语义着色：可更新要跳出来（它是要做的事），其余保持安静。
+	parts := []string{fmt.Sprintf("已安装 %d", inst)}
+	updText := fmt.Sprintf("可更新 %d", upd)
+	if upd > 0 {
+		updText = m.theme.WarnBold().Render(updText)
+	}
+	parts = append(parts, updText)
+	if pend > 0 {
+		parts = append(parts, m.theme.PrimaryPlain().Render(fmt.Sprintf("待安装 %d", pend)))
+	} else {
+		parts = append(parts, "待安装 0")
+	}
 	if off > 0 {
 		// 停用的软件也看得见，计数就得提一句，否则用户对不上数。
-		line += fmt.Sprintf(" · 停用 %d", off)
+		parts = append(parts, fmt.Sprintf("停用 %d", off))
 	}
-	return line
+	return strings.Join(parts, m.theme.Dim().Render(" · "))
 }
 
 func (m Model) viewBody(w, height int) string {
@@ -366,15 +376,46 @@ func (m Model) overviewStyle(shown []*engine.App) func(row, col int) lipgloss.St
 		}
 		a := shown[row]
 		if !appEnabled(a, m.ctrl) || a.Shadowed {
+			// 冲突行整体压暗（它现在动不了），但状态列要留住红色 ——
+			// 「为什么动不了」比「动不了」更需要被看见。
+			if col == colState && a.Shadowed {
+				return m.tableCell(m.theme.ErrBold())
+			}
 			return m.tableCell(m.theme.Dim())
 		}
 		switch {
+		case col == colState:
+			return m.tableCell(m.stateStyle(a))
 		case a.CheckErr != nil && col == colNote:
 			return m.tableCell(m.theme.Err())
-		case col == colState && a.Action != core.ActionNoOp:
-			return m.tableCell(m.theme.Warn())
 		}
 		return m.tableCell(lipgloss.NewStyle())
+	}
+}
+
+// stateStyle 给「状态」列上色。
+//
+// 这一列是扫一眼看结论的地方（最新 / 可更新 / 冲突 / 停用），语义色落在这里最有用；
+// 正文与版本列保持中性 —— 满屏都是颜色时，颜色就不再表示任何东西了。
+func (m Model) stateStyle(a *engine.App) lipgloss.Style {
+	if m.isChecking(a.Ref.ID) {
+		return m.theme.PrimaryPlain()
+	}
+	switch {
+	case a.CheckErr != nil:
+		return m.theme.Err()
+	case a.Shadowed:
+		return m.theme.ErrBold()
+	}
+	switch a.Action {
+	case core.ActionUpdate, core.ActionReinstall:
+		return m.theme.WarnBold()
+	case core.ActionInstall:
+		return m.theme.PrimaryPlain()
+	case core.ActionUninstall:
+		return m.theme.ErrBold()
+	default:
+		return m.theme.OK()
 	}
 }
 
@@ -413,7 +454,7 @@ func (m Model) viewDetail(w, height int) string {
 	}
 	section := func(title string) {
 		b.WriteString("\n")
-		b.WriteString(m.theme.Primary().Render(title))
+		b.WriteString(m.theme.AccentStyle().Render(title))
 		b.WriteString("\n")
 	}
 
@@ -571,9 +612,13 @@ func (m Model) jobStyle(row, col int) lipgloss.Style {
 	if col == jobColState {
 		switch j.State {
 		case "失败":
-			return m.tableCell(m.theme.Err())
+			return m.tableCell(m.theme.ErrBold())
 		case "完成":
 			return m.tableCell(m.theme.OK())
+		case "进行中":
+			return m.tableCell(m.theme.PrimaryPlain())
+		case "等待", "排队":
+			return m.tableCell(m.theme.Warn())
 		}
 	}
 	return m.tableCell(lipgloss.NewStyle())

@@ -339,7 +339,7 @@ func TestHandleEvent(t *testing.T) {
 // 中文界面在 ASCII 模式下也应正常渲染。
 func TestASCIIMode(t *testing.T) {
 	m := newTestModel(t)
-	m.theme = NewTheme(true, true, "ascii")
+	m.theme = NewTheme(ThemeOptions{ASCII: true, NoColor: true, Borders: "ascii"})
 	m.helpView = newHelpModel(true)
 	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	out := content(m)
@@ -358,7 +358,7 @@ func TestASCIIMode(t *testing.T) {
 // 清掉后光标将不可见。
 func TestNoColorEmitsNoColorANSI(t *testing.T) {
 	m := newTestModel(t)
-	m.theme = NewTheme(false, true, "unicode")
+	m.theme = NewTheme(ThemeOptions{ASCII: false, NoColor: true, Borders: "unicode"})
 	m.helpView = newHelpModel(true)
 	m.apps = []*engine.App{{Ref: core.AppRef{ID: "demo", Name: "Demo"}, Action: core.ActionUpdate}}
 	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})

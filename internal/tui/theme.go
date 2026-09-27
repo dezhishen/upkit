@@ -10,39 +10,144 @@ package tui
 
 import (
 	"image/color"
+	"os"
+	"strconv"
 	"strings"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Theme 控制配色与边框字符，支持 --no-color 与 --ascii 降级。
+// Palette 是一套配色。
+//
+// 为什么非得两套：同一个色号在深色与浅色终端上的可见度完全相反。给深色终端挑的
+// 245 号灰，到了白底终端上几乎看不见；反之给白底挑的深蓝，放到黑底上又糊成一团。
+// 所以「auto」不是装饰选项，而是默认就该有的行为。
+type Palette struct {
+	// Border / Title 是面板边框与嵌在上边框里的标题。
+	Border color.Color
+	Title  color.Color
+	// Primary 是强调文字（表头主色、来源名、键名）。
+	Primary color.Color
+	// Accent 用于需要跳出正文的地方（设置分组标题、详情里的区块标题）。
+	Accent color.Color
+	// OK / Warn / Err 是语义色：成功、需要注意、失败。
+	OK, Warn, Err color.Color
+	// Dim 是次要文字（说明列、时长、灰色状态）。
+	Dim color.Color
+	// SelFg / SelBg 是选中行的前景与背景。
+	SelFg, SelBg color.Color
+}
+
+// 深色终端（黑底）用的配色。
+//
+// lipgloss v2 把 Color 从类型改成函数（返回 image/color.Color），不再是常量，
+// 因此这里只能用 var。
+var darkPalette = Palette{
+	Border:  lipgloss.Color("60"),  // 偏灰的蓝：整圈亮蓝太吵，标题会失去重点
+	Title:   lipgloss.Color("212"), // 洋红：与蓝底形成对比
+	Primary: lipgloss.Color("75"),  // 亮蓝
+	Accent:  lipgloss.Color("212"),
+	OK:      lipgloss.Color("42"),  // 绿
+	Warn:    lipgloss.Color("214"), // 橙
+	Err:     lipgloss.Color("203"), // 红
+	Dim:     lipgloss.Color("245"), // 灰
+	SelFg:   lipgloss.Color("232"),
+	SelBg:   lipgloss.Color("75"),
+}
+
+// 浅色终端（白底）用的配色：整体压暗、提高饱和度，保证在白底上读得清。
+var lightPalette = Palette{
+	Border:  lipgloss.Color("245"), // 浅灰边框：白底上「有框但不抢眼」
+	Title:   lipgloss.Color("127"), // 紫红
+	Primary: lipgloss.Color("25"),  // 深蓝
+	Accent:  lipgloss.Color("127"),
+	OK:      lipgloss.Color("28"),  // 深绿
+	Warn:    lipgloss.Color("130"), // 棕橙
+	Err:     lipgloss.Color("160"), // 深红
+	Dim:     lipgloss.Color("240"), // 中灰
+	SelFg:   lipgloss.Color("231"),
+	SelBg:   lipgloss.Color("25"),
+}
+
+// ThemeOptions 是主题的几个开关：命令行与设置都汇到这里。
+type ThemeOptions struct {
+	ASCII   bool
+	NoColor bool
+	Borders string // unicode（圆角）| square（直角）| ascii（纯 ASCII）
+	// Variant 是配色方向：auto（默认，按终端背景猜）/ dark / light。
+	Variant string
+}
+
+// Theme 是渲染用的一整套样式。
 type Theme struct {
 	NoColor bool
 	ASCII   bool
-	Borders string // unicode（圆角）| square（直角）| ascii（纯 ASCII）
+	Borders string
+	p       Palette
+	// variant 记录最终选中的方向（auto 解析之后的结果），供测试与界面说明用。
+	variant string
 }
 
 // NewTheme 构造主题。
-func NewTheme(ascii, noColor bool, borders ...string) Theme {
-	t := Theme{ASCII: ascii, NoColor: noColor}
-	if len(borders) > 0 {
-		t.Borders = borders[0]
+func NewTheme(opts ThemeOptions) Theme {
+	variant := resolveVariant(opts.Variant)
+	return Theme{
+		ASCII:   opts.ASCII,
+		NoColor: opts.NoColor,
+		Borders: opts.Borders,
+		p:       paletteFor(variant),
+		variant: variant,
 	}
-	return t
 }
 
-// 颜色。lipgloss v2 把 Color 从类型改成函数（返回 image/color.Color），
-// 不再是常量，因此这里只能用 var。
-var (
-	colPrimary = lipgloss.Color("75")
-	colAccent  = lipgloss.Color("212")
-	colOK      = lipgloss.Color("42")
-	colWarn    = lipgloss.Color("214")
-	colErr     = lipgloss.Color("203")
-	colDim     = lipgloss.Color("245")
-	colSelText = lipgloss.Color("232")
-)
+// Variant 返回最终生效的配色方向（auto 已解析）。
+func (t Theme) Variant() string { return t.variant }
+
+// paletteFor 按方向取配色。
+func paletteFor(variant string) Palette {
+	if variant == "light" {
+		return lightPalette
+	}
+	return darkPalette
+}
+
+// resolveVariant 把 auto 解析成 dark 或 light。
+//
+// 终端不会告诉你它的背景色，但很多终端会设 COLORFGBG（形如 "15;0"，最后一段是
+// 背景色号）。有它就用它，没有就按深色处理 —— 绝大多数终端是深色底，猜错的那一半
+// 也能用 ui.theme 手动改。
+func resolveVariant(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "light":
+		return "light"
+	case "dark":
+		return "dark"
+	}
+	if bg, ok := backgroundColorIndex(); ok {
+		// 0..6 与 8 是深色；7 与 15 是白/亮白。其余（含 256 色）按深色处理：
+		// 没有更可靠的判据时，深色是更安全的默认。
+		if bg == 7 || bg == 15 {
+			return "light"
+		}
+	}
+	return "dark"
+}
+
+// backgroundColorIndex 从 COLORFGBG 里取背景色号。
+func backgroundColorIndex() (int, bool) {
+	v := strings.TrimSpace(os.Getenv("COLORFGBG"))
+	if v == "" {
+		return 0, false
+	}
+	parts := strings.Split(v, ";")
+	last := strings.TrimSpace(parts[len(parts)-1])
+	n, err := strconv.Atoi(last)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
 
 // style 组装一个基础样式；NoColor 时只保留字重，不发颜色。
 func (t Theme) style(fg color.Color, bold bool) lipgloss.Style {
@@ -57,25 +162,36 @@ func (t Theme) style(fg color.Color, bold bool) lipgloss.Style {
 }
 
 // Title 板块标题。
-func (t Theme) Title() lipgloss.Style { return t.style(colAccent, true) }
+func (t Theme) Title() lipgloss.Style { return t.style(t.p.Title, true) }
 
 // Primary 强调文字。
-func (t Theme) Primary() lipgloss.Style { return t.style(colPrimary, true) }
+func (t Theme) Primary() lipgloss.Style { return t.style(t.p.Primary, true) }
 
 // Dim 次要文字。
-func (t Theme) Dim() lipgloss.Style { return t.style(colDim, false) }
+func (t Theme) Dim() lipgloss.Style { return t.style(t.p.Dim, false) }
 
 // OK 成功。
-func (t Theme) OK() lipgloss.Style { return t.style(colOK, false) }
+func (t Theme) OK() lipgloss.Style { return t.style(t.p.OK, false) }
 
 // Warn 警告。
-func (t Theme) Warn() lipgloss.Style { return t.style(colWarn, false) }
+func (t Theme) Warn() lipgloss.Style { return t.style(t.p.Warn, false) }
 
 // Err 错误。
-func (t Theme) Err() lipgloss.Style { return t.style(colErr, false) }
+func (t Theme) Err() lipgloss.Style { return t.style(t.p.Err, false) }
+
+// OKBold / WarnBold / ErrBold 是语义色的加重版：用在状态列这种「一眼扫过去」的地方。
+func (t Theme) OKBold() lipgloss.Style   { return t.style(t.p.OK, true) }
+func (t Theme) WarnBold() lipgloss.Style { return t.style(t.p.Warn, true) }
+func (t Theme) ErrBold() lipgloss.Style  { return t.style(t.p.Err, true) }
+
+// PrimaryPlain 是不加粗的强调色：用在键名、数字这类小块文字上。
+func (t Theme) PrimaryPlain() lipgloss.Style { return t.style(t.p.Primary, false) }
+
+// Accent 用于跳出来的小标题（设置分组、详情区块）。
+func (t Theme) AccentStyle() lipgloss.Style { return t.style(t.p.Accent, true) }
 
 // Header 表头：比正文重，但不抢眼。
-func (t Theme) Header() lipgloss.Style { return t.style(colDim, true) }
+func (t Theme) Header() lipgloss.Style { return t.style(t.p.Dim, true) }
 
 // SelectedRow 选中行。
 //
@@ -85,7 +201,7 @@ func (t Theme) SelectedRow() lipgloss.Style {
 	if t.NoColor {
 		return lipgloss.NewStyle().Bold(true)
 	}
-	return lipgloss.NewStyle().Background(colPrimary).Foreground(colSelText)
+	return lipgloss.NewStyle().Background(t.p.SelBg).Foreground(t.p.SelFg)
 }
 
 // Cursor 返回当前行前缀。选中与否靠它体现，因此在两个主题下都保留。
@@ -137,7 +253,7 @@ func (t Theme) Frame(title, body string, width, height int, active bool) string 
 		Width(width).
 		Height(height)
 	if !t.NoColor && active {
-		style = style.BorderForeground(colPrimary)
+		style = style.BorderForeground(t.p.Border)
 	}
 	box := style.Render(body)
 	if title == "" {
@@ -195,8 +311,8 @@ func (t Theme) Bar(done, total int64, width int) string {
 	if t.NoColor {
 		return "[" + strings.Repeat("=", filled) + strings.Repeat(" ", width-filled) + "]"
 	}
-	on := lipgloss.NewStyle().Foreground(colOK).Render(strings.Repeat("█", filled))
-	off := lipgloss.NewStyle().Foreground(colDim).Render(strings.Repeat("░", width-filled))
+	on := lipgloss.NewStyle().Foreground(t.p.OK).Render(strings.Repeat("█", filled))
+	off := lipgloss.NewStyle().Foreground(t.p.Dim).Render(strings.Repeat("░", width-filled))
 	return on + off
 }
 
