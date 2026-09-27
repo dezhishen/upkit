@@ -234,7 +234,7 @@ func (m Model) updateSettings(key string) (tea.Model, tea.Cmd) {
 			m.setStatus("没有需要保存的修改")
 			return m, nil
 		}
-		if err := m.set.Save(); err != nil {
+		if err := m.ctrl.SaveSettings(); err != nil {
 			m.setStatusErr(err)
 			return m, nil
 		}

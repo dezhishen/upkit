@@ -9,9 +9,12 @@
 依赖是单向的，且没有任何环：
 
 ```
-cmd/upkit  ──────────────► tui ──────► engine ──────► registry ──────► 适配器
-                │                        │                │
-                └──► pluginhost ─────────┘                └──► core（零内部依赖）
+cmd/upkit ──► control ──► engine ──────► registry ──────► 适配器
+                 │           │               │
+                 │           └───────────────┴──► core（零内部依赖）
+                 └──► pluginhost / pluginfeed / apps / settings / logging
+
+tui（界面）────► control（只再用 core 那边的值类型）
 ```
 
 - **`internal/core` 只 import 标准库**。它定义领域模型（`AppRef` / `Release` /
@@ -23,6 +26,23 @@ cmd/upkit  ──────────────► tui ──────�
 
 `core` 零依赖这条约束是整套设计的地基：它让适配器之间无法互相引用，也让
 「谁依赖谁」永远一眼可判。
+
+### 界面层不持有服务
+
+`internal/tui` 只做两件事：把状态画出来、把输入转成意图。它不持有任何领域服务句柄，
+多步流程也只有 `internal/control` 里一份 —— 比如安装插件 = 下载校验 → 覆盖前停掉旧
+进程 → 覆盖 → 把校验过的摘要记进信任 → 重建来源，五步写在一个方法里。
+
+这条边界是踩出来的：视图层顺手改领域状态很难被发现，因为缺的往往不是显示而是流程里
+的一步。此前「插件装完没写信任」「更新前没停掉正在运行的插件」「启停只改了文件、没改
+行为」都属于这类，混在按键处理与 `tea.Cmd` 闭包里就没人看全。
+
+约束由 `scripts/check-layering.sh` 钉住（已接进 `make check` 与 CI）：界面可以依赖
+值类型（`core` 的模型、`engine.App`、`pluginhost.State`、`pluginfeed.Entry`）与
+`control`，不得出现 `*engine.Engine` 之类的服务句柄。设置是有意留的例外 —— 它的字段
+由界面直接编辑，是纯内存结构、没有 IO，只有落盘走控制层。
+
+换 GUI 时只需要换掉 `internal/tui`：除 `cmd/upkit` 外没有任何地方 import 它。
 
 ## 2. 四条轴
 

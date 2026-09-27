@@ -69,13 +69,16 @@ fmt-check: ## 检查代码是否已格式化
 headers-check: ## 检查文件头（package 唯一、//go:build 在第 1 行）
 	@bash scripts/check-headers.sh
 
+layers-check: ## 检查分层（界面层不得持有领域服务）
+	@bash scripts/check-layering.sh
+
 tidy: ## 整理 go.mod / go.sum
 	$(GO) mod tidy
 
 clean: ## 清理构建产物
 	rm -rf $(DIST) release coverage.out
 
-check: fmt-check headers-check vet test ## 本地质量门禁
+check: fmt-check headers-check layers-check vet test ## 本地质量门禁
 
 run: ## 启动 TUI（开发调试用）
 	$(GO) run $(PKG)

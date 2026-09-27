@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/dezhishen/upkit/internal/apps"
 	"github.com/dezhishen/upkit/internal/core"
@@ -247,17 +248,29 @@ func (c *Controller) SaveSettings() error {
 // 下面这几个是给迁移中的前端暂时用的：对应子系统还没收进本层的方法。
 // 每收完一个就删一个，别在新增代码里用它们。
 
-// Settings 返回设置（过渡）。
+// LogEntry 是一条日志（给界面展示用的裁剪版）。
+type LogEntry struct {
+	At    time.Time
+	Level string
+	App   string
+	Msg   string
+}
+
+// LogSnapshot 返回日志环里现有的内容，供前端初始化日志面板。
+func (c *Controller) LogSnapshot() []LogEntry {
+	if c.log == nil {
+		return nil
+	}
+	ring := c.log.Ring().Snapshot()
+	out := make([]LogEntry, 0, len(ring))
+	for _, r := range ring {
+		out = append(out, LogEntry{At: r.At, Level: r.Level, App: r.App, Msg: r.Msg})
+	}
+	return out
+}
+
+// Settings 返回设置。
+//
+// 这是有意保留的例外：设置字段由界面直接编辑（纯内存结构，没有 IO），只有落盘走
+// 本层。将来换 GUI 也是同一套 —— 表单直接改这个结构，再调 SaveSettings。
 func (c *Controller) Settings() *settings.Settings { return c.set }
-
-// Manifest 返回软件清单（过渡）。
-func (c *Controller) Manifest() *apps.File { return c.afs }
-
-// Logger 返回日志管理器（过渡）。
-func (c *Controller) Logger() *logging.Manager { return c.log }
-
-// Host 返回插件宿主（过渡）。
-func (c *Controller) Host() *pluginhost.Manager { return c.host }
-
-// Feed 返回订阅仓库（过渡）。
-func (c *Controller) Feed() *pluginfeed.Store { return c.feed }

@@ -46,6 +46,11 @@ jobs:
       - name: 文件头检查
         run: bash scripts/check-headers.sh
 
+      - name: 分层检查
+        # 界面层（internal/tui）不得持有领域服务：服务句柄与多步流程都在
+        # internal/control。这条约束靠评审守不住，钉在流水线上。
+        run: bash scripts/check-layering.sh
+
       - name: go vet
         run: go vet ./...
 

@@ -17,7 +17,6 @@ import (
 	"github.com/dezhishen/upkit/internal/control"
 	"github.com/dezhishen/upkit/internal/core"
 	"github.com/dezhishen/upkit/internal/engine"
-	"github.com/dezhishen/upkit/internal/logging"
 	"github.com/dezhishen/upkit/internal/pluginfeed"
 	"github.com/dezhishen/upkit/internal/settings"
 )
@@ -134,9 +133,8 @@ type Model struct {
 	// ctrl 是控制层。界面自己不持有引擎、也不建事件通道：那两件事都在这里。
 	ctrl *control.Controller
 
-	// 下面几个是迁移期间的过渡字段（New 从控制层取出），对应子系统收完就删。
+	// 设置由界面直接编辑（纯内存结构，没有 IO），只有落盘走控制层。
 	set *settings.Settings
-	log *logging.Manager
 
 	width, height int
 	tab           tabID
@@ -203,12 +201,10 @@ func New(opts Options) Model {
 		keys:      newKeyMap(),
 		helpView:  newHelpModel(opts.NoColor),
 	}
-	// 过渡期：设置与日志尚未全部收进控制层，先从它那里取一份。
+	// 设置由界面直接编辑（纯内存结构），所以这里取一份；落盘走控制层。
 	if c := opts.Ctrl; c != nil {
-		m.set, m.log = c.Settings(), c.Logger()
-	}
-	if m.log != nil {
-		for _, r := range m.log.Ring().Snapshot() {
+		m.set = c.Settings()
+		for _, r := range c.LogSnapshot() {
 			m.logs = append(m.logs, logEntry{At: r.At, Level: r.Level, App: r.App, Msg: r.Msg})
 		}
 	}
