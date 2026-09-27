@@ -166,3 +166,17 @@ jobs:
       # 演练版本：合法 semver，且一眼能看出不是真版本。
       version: v0.0.0-dev.${{ github.sha }}
       artifact-name: release-smoke
+
+  publish-smoke:
+    name: 发布演练（不创建 Release）
+    needs: smoke
+    # 发布这一步同样与真发版共用一份定义（publish-release.yml）。
+    #
+    # 之前这条演练只覆盖了构建那一半，于是 publish job 少一步 checkout 的问题
+    # 一直到真正打 tag 才暴露（v0.0.1 就这么挂的：gh 报 not a git repository）。
+    # 发布这一步出的事故多半与环境无关，跑一遍就能撞出来。
+    uses: ./.github/workflows/publish-release.yml
+    with:
+      version: v0.0.0-dev.${{ github.sha }}
+      artifact-name: release-smoke
+      dry-run: "true"

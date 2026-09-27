@@ -1,0 +1,144 @@
+name: Publish Release
+
+# 可复用工作流：把构建产物挂到 GitHub Release 上。
+#
+# 与 build-release.yml 同样的用意 —— 演练与真发版共用一份定义。此前发布逻辑
+# 只写在 release.yml 里，CI 的「发布演练」只跑了构建那一半，于是 publish 少一步
+# checkout 这种问题要等到真正打 tag 才暴露（v0.0.1 就这么挂的）：
+#
+#   failed to run git: fatal: not a git repository
+#
+# 发布这一步出的事故多数与环境无关 —— 缺 checkout、产物路径写错、gh 参数拼错
+# —— 演练时跑一遍就能撞出来。
+#
+# 本工作流**只发 Release**：不打 tag、不构建。产物由调用方构建好并上传为
+# artifact，这里只负责取下来、校验齐全、发布。
+#
+# 权限由调用方授予：真发版需要 contents: write（release.yml 已在顶层声明），
+# 演练只需要读（ci.yml 只给 contents: read）。这里不写 permissions 块，
+# 以免与调用方的授权范围打架。
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 版本号（形如 v1.2.3 或 v1.3.0-rc.1）
+        required: true
+        type: string
+      prerelease:
+        description: 是否标记为预览版（"true" / "false"）
+        required: false
+        type: string
+        default: "false"
+      start-tag:
+        description: changelog 起点；留空表示这是首个正式版
+        required: false
+        type: string
+        default: ""
+      artifact-name:
+        description: 从哪个 artifact 取产物
+        required: false
+        type: string
+        default: release-dist
+      dry-run:
+        description: 只演练：校验前置条件与产物齐全，不创建 Release（"true" / "false"）
+        required: false
+        type: string
+        default: "false"
+
+jobs:
+  publish:
+    name: 创建 Release
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
+      PRERELEASE: ${{ inputs.prerelease }}
+      START_TAG: ${{ inputs.start-tag }}
+      DRY_RUN: ${{ inputs.dry-run }}
+    steps:
+      # 顺序不能反：actions/checkout 默认会 git clean -ffdx，把工作区里未被 git
+      # 跟踪的文件清掉 —— 先下载的产物会被一并删除。
+      #
+      # fetch-depth 0 与 --generate-notes 相关：gh 需要本地仓库里的历史与 tag
+      # 才能算出 changelog 的范围。缺这一步（或只取浅历史）会以
+      # "fatal: not a git repository" 失败。
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: dist
+
+      - name: 发布
+        run: |
+          set -euo pipefail
+
+          # 前置条件单独报错，比 gh 自己抛 "not a git repository" 好定位。
+          if ! git rev-parse --git-dir >/dev/null 2>&1; then
+            echo "::error::工作目录不是 git 仓库，gh --generate-notes 无法解析 changelog 范围；本 job 缺少 actions/checkout"
+            exit 1
+          fi
+
+          # 产物一次性上传：upkit 本体、校验值、示例插件、官方订阅清单。
+          # feed.yaml 作为附件发布 —— 内置订阅地址指向 .../releases/latest/download/feed.yaml。
+          files=(
+            dist/upkit-windows-amd64.exe
+            dist/upkit-windows-arm64.exe
+            dist/sha256sums.txt
+            dist/feed.yaml
+          )
+          for f in dist/plugins/*.exe; do files+=("$f"); done
+
+          # 逐个确认存在。glob 没匹配上时拿到的是字面量，也会在这里被挡下。
+          missing=0
+          for f in "${files[@]}"; do
+            if [[ ! -f "$f" ]]; then
+              echo "::error::缺少产物 $f"
+              missing=1
+            fi
+          done
+          (( missing == 0 )) || exit 1
+
+          notes_args=(--generate-notes)
+          [[ -n "$START_TAG" ]] && notes_args+=(--notes-start-tag "$START_TAG")
+
+          if [[ "$DRY_RUN" == "true" ]]; then
+            {
+              echo "### 发布演练 $VERSION"
+              echo
+              echo "前置条件与产物校验通过，未创建 Release。"
+              echo
+              echo '```'
+              echo "预览版: $PRERELEASE"
+              echo "changelog 起点: ${START_TAG:-（无，首个正式版）}"
+              echo "待上传 ${#files[@]} 个文件："
+              printf '  %s\n' "${files[@]}"
+              echo '```'
+            } >>"$GITHUB_STEP_SUMMARY"
+            echo "演练通过：$VERSION，${#files[@]} 个产物齐全"
+            exit 0
+          fi
+
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            # 重跑：附件覆盖、notes 重新生成，不影响已存在的 tag。
+            echo "Release $VERSION 已存在，更新附件与 changelog"
+            gh release upload "$VERSION" "${files[@]}" --clobber
+            gh release edit "$VERSION" "${notes_args[@]}"
+          else
+            create_args=("$VERSION" --title "$VERSION" --verify-tag "${notes_args[@]}")
+            [[ "$PRERELEASE" == "true" ]] && create_args+=(--prerelease)
+            gh release create "${create_args[@]}" "${files[@]}"
+          fi
+
+          {
+            echo "### 已发布 $VERSION"
+            echo
+            echo "预览版: $PRERELEASE"
+            echo
+            echo '```'
+            echo "产物: upkit-windows-amd64.exe / upkit-windows-arm64.exe / feed.yaml / 插件"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"

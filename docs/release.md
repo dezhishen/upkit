@@ -87,13 +87,18 @@ check（那个能力只对分支生效），GitHub 也不提供服务端 pre-rec
 test（gofmt / vet / test -race + 覆盖率 + 13 个包的分级门禁）
   ├─ build（两个架构的 exe，产物传 artifact 供下载）
   └─ smoke（发布演练：真构建全部产物 + 生成 feed.yaml，产物传 artifact）
+       └─ publish-smoke（发布演练：校验产物齐全与前置条件，不创建 Release）
 ```
 
-`smoke` 与真发版的 `build` **调用同一个可复用工作流**
-（`.github/workflows/build-release.yml`），因此两边不会漂移 ——
-「main 上是绿的」就意味着「现在能发版」。它**不碰 tag、不碰 Release**，
+两个演练 job 与真发版的对应 job **分别调用同一个可复用工作流**
+（`build-release.yml` 与 `publish-release.yml`），因此两边不会漂移 ——
+「main 上是绿的」就意味着「现在能发版」。它们**不碰 tag、不碰 Release**，
 产物（含演练版 `feed.yaml`）放在名为 `release-smoke` 的 artifact 里供下载核对，
 演练版本号形如 `v0.0.0-dev.<commit sha>`。
+
+发布这一步与构建一样容易出与环境无关的事故（漏了 `actions/checkout`、产物路径
+写错、`gh` 参数拼错），所以也放进演练跑一遍。`publish-smoke` 会真实地取产物、
+逐个校验存在性、拼出 `gh release` 的完整参数，只差最后一步不执行。
 
 这样插件构建、清单生成这些环节在每次提交后就验过了，不会拖到发版那一刻才暴露。
 
@@ -205,8 +210,37 @@ changelog 的起点始终是**最近一个正式版**：预览版据此列出自
 | 构建失败 | 修好推到 `main`，再跑一次；tag 若已打上，先删掉它 |
 | Release 建好了但产物不全 | 重跑工作流：`publish` 检测到 Release 已存在时会**覆盖附件并重新生成 notes**，不会报错 |
 | 想先看看效果 | 勾 `dry_run` 演练：走完 verify → version → build，但不打 tag、不发版 |
+| tag 已打出，但 `publish` 失败 | 见下节「流水线本身有 bug」 |
 
 `publish` 是幂等的（`gh release upload --clobber` + `gh release edit`），所以重跑安全。
+
+### 流水线本身有 bug 时怎么救
+
+`publish` 失败往往不是代码的问题，而是工作流自身写错了。这种情况下**「Re-run
+failed jobs」是没用的** —— 重跑用的是那次运行当时的 workflow 文件，改在 `main`
+上的修复不会被带上。
+
+正确做法是把 tag 移到修复提交上，靠 `push: tags` 重新触发一次：
+
+```bash
+# 1. 修好工作流，推到 main，等 CI（含发布演练）变绿
+git push origin main
+
+# 2. 把 tag 移到这个提交上并重推
+git push --delete origin v0.0.1
+git tag -fa v0.0.1 -m "发布 v0.0.1"
+git push origin v0.0.1
+```
+
+两个前提：
+
+- **修复提交必须先通过 `ci.yml`**，否则 `verify` 的门禁会拦下（它要求发布依据
+  的那个提交跑过 CI）。
+- **tag 推的是哪个提交，就用哪份工作流定义** —— 所以修复必须落在 tag 指向的
+  提交上，不能只留在 `main` 后面。
+
+若该版本已经发出去了（Release 已存在），就不能再挪 tag 覆盖别人的下载，
+应当换一个版本位重发。
 
 ## 7. 本地能做的
 

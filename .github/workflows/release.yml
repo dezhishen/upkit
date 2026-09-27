@@ -202,52 +202,13 @@ jobs:
     name: 创建 Release
     needs: [version, build]
     if: ${{ needs.version.outputs.dry_run != 'true' }}
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      VERSION: ${{ needs.version.outputs.version }}
-      PRERELEASE: ${{ needs.version.outputs.prerelease }}
-      START_TAG: ${{ needs.version.outputs.start_tag }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-dist
-          path: dist
-
-      - name: 发布
-        run: |
-          set -euo pipefail
-
-          # 产物一次性上传：upkit 本体、校验值、示例插件、官方订阅清单。
-          # feed.yaml 作为附件发布 —— 内置订阅地址指向 .../releases/latest/download/feed.yaml。
-          files=(
-            dist/upkit-windows-amd64.exe
-            dist/upkit-windows-arm64.exe
-            dist/sha256sums.txt
-            dist/feed.yaml
-          )
-          for f in dist/plugins/*.exe; do files+=("$f"); done
-
-          notes_args=(--generate-notes)
-          [[ -n "$START_TAG" ]] && notes_args+=(--notes-start-tag "$START_TAG")
-
-          if gh release view "$VERSION" >/dev/null 2>&1; then
-            # 重跑：附件覆盖、notes 重新生成，不影响已存在的 tag。
-            echo "Release $VERSION 已存在，更新附件与 changelog"
-            gh release upload "$VERSION" "${files[@]}" --clobber
-            gh release edit "$VERSION" "${notes_args[@]}"
-          else
-            create_args=("$VERSION" --title "$VERSION" --verify-tag "${notes_args[@]}")
-            [[ "$PRERELEASE" == "true" ]] && create_args+=(--prerelease)
-            gh release create "${create_args[@]}" "${files[@]}"
-          fi
-
-          {
-            echo "### 已发布 $VERSION"
-            echo
-            echo "预览版: $PRERELEASE"
-            echo
-            echo '```'
-            echo "产物: upkit-windows-amd64.exe / upkit-windows-arm64.exe / feed.yaml / 插件"
-            echo '```'
-          } >>"$GITHUB_STEP_SUMMARY"
+    # 与 CI 上的发布演练共用同一份定义：演练绿的，这里就不会有意外。
+    # 此前这段逻辑内联在本文件里，演练只覆盖了构建那一半，于是「publish 少一步
+    # checkout」直到打 tag 才暴露。
+    uses: ./.github/workflows/publish-release.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      prerelease: ${{ needs.version.outputs.prerelease }}
+      start-tag: ${{ needs.version.outputs.start_tag }}
+      artifact-name: release-dist
+      dry-run: "false"
