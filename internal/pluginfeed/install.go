@@ -33,6 +33,12 @@ type InstallRequest struct {
 	Authorize func(host string) (bool, error)
 	// Progress 可选：报告下载进度。
 	Progress func(done, total int64)
+	// BeforeWrite 在覆盖可执行文件之前被调用，返回错误即中止安装。
+	//
+	// 给宿主留的钩子：Windows 上正在运行的插件不能被改名覆盖（会拿到 Access is
+	// denied），必须先把进程停掉再写盘。放在写盘前而不是开工前，是为了不让下载那段
+	// 时间白白把插件停着。
+	BeforeWrite func() error
 }
 
 // Installed 是一次成功安装的结果。
@@ -88,6 +94,13 @@ func Install(ctx context.Context, client *http.Client, req InstallRequest) (*Ins
 		return nil, fmt.Errorf("创建插件目录 %s: %w", req.PluginDir, err)
 	}
 	execPath := pluginhost.ResolveExec(req.PluginDir, req.Entry.Plugin.ID, "")
+	// 盖掉旧文件之前先让宿主停掉旧进程：它开着这个文件的话，改名会以
+	// 「Access is denied」失败（Windows 上必现，更新插件时最典型）。
+	if req.BeforeWrite != nil {
+		if err := req.BeforeWrite(); err != nil {
+			return nil, fmt.Errorf("替换 %s 前准备失败: %w", execPath, err)
+		}
+	}
 	if err := fsutil.WriteFileAtomic(execPath, data, 0o755); err != nil {
 		return nil, fmt.Errorf("写入插件 %s: %w", execPath, err)
 	}

@@ -10,6 +10,7 @@ import (
 	upkitplugin "github.com/dezhishen/upkit/pkg/plugin"
 
 	"github.com/dezhishen/upkit/internal/apps"
+	"github.com/dezhishen/upkit/internal/fsutil"
 )
 
 func boolPtr(v bool) *bool { return &v }
@@ -255,6 +256,57 @@ func TestNewManagerRejectsBadEntries(t *testing.T) {
 				t.Fatal("期望报错")
 			}
 		})
+	}
+}
+
+// 更新插件前必须先把进程停掉，并等到文件真的可替换。
+//
+// Windows 上正在运行的映像不能被改名覆盖，而落盘用的正是「写 .tmp 再改名」，于是更新
+// 会以一句「Access is denied」失败 —— 那个报错看起来像权限问题。
+func TestStopForUpdateReleasesExecutable(t *testing.T) {
+	dir := t.TempDir()
+	bin := buildExample(t, dir)
+	writeManifest(t, dir, "example-static", "id: example-static\nname: 示例静态源\nmode: catalog\n")
+
+	sha, err := HashFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager(Config{
+		Dir:      dir,
+		Entries:  []apps.SourceSpec{{ID: "example-static", Kind: apps.KindPlugin, Trust: sha}},
+		DataRoot: t.TempDir(),
+		LogRoot:  t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer m.Close()
+
+	m.Load(context.Background())
+	if st := m.Sources()[0]; st.State != StateOK {
+		t.Fatalf("前置条件不成立，来源应可用: %s：%s", st.State, st.Detail)
+	}
+
+	if err := m.StopForUpdate("example-static"); err != nil {
+		t.Fatalf("StopForUpdate: %v", err)
+	}
+
+	if st := m.Sources()[0]; st.State != StateStopped {
+		t.Errorf("状态应为 stopped，实际 %s", st.State)
+	}
+	// 进程真的没了：还连得上一个「已停掉」的子进程就说明根本没停。
+	// 用 ConfigSchema 而不是 Software —— 后者读的是缓存，停掉之后照样返回空列表。
+	if _, err := m.ConfigSchema(context.Background(), "example-static"); err == nil {
+		t.Error("停止之后不应还能调用插件")
+	}
+	// 报告的那个症状：停止之后文件必须能被覆盖。
+	if err := fsutil.WriteFileAtomic(bin, []byte("new-binary"), 0o755); err != nil {
+		t.Fatalf("停止之后应当能覆盖插件文件: %v", err)
+	}
+	// 未知来源不报错：首次安装时宿主里根本没有它。
+	if err := m.StopForUpdate("nope"); err != nil {
+		t.Errorf("来源不存在时不应报错: %v", err)
 	}
 }
 

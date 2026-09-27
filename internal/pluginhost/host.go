@@ -27,7 +27,12 @@ const (
 	StateMissing   State = "missing"   // 找不到可执行文件或描述
 	StateUntrusted State = "untrusted" // 未信任（或缺哈希记录），不启动
 	StateError     State = "error"     // 启动或握手失败
+	// StateStopped 是为替换可执行文件而主动停掉（更新插件期间）：不是错误，也不是用户停用。
+	StateStopped State = "stopped"
 )
+
+// updateStopTimeout 是等插件进程放开可执行文件的上限。
+const updateStopTimeout = 5 * time.Second
 
 // SourceStatus 是一个来源对外呈现的状态，供界面展示与排障。
 type SourceStatus struct {
@@ -207,6 +212,69 @@ func (m *Manager) stopClient(it *item) {
 	m.mu.Unlock()
 	if c != nil {
 		c.Kill()
+	}
+}
+
+// StopForUpdate 停掉某个来源的插件进程，并等到它的可执行文件真的能被替换。
+//
+// 覆盖插件之前必须走这一步：Windows 上正在运行的映像不能被改名覆盖，而写入用的正是
+// 「写 .tmp 再改名」，于是更新会以一句「Access is denied」失败 —— 那个报错长得像权限
+// 问题，实际是「进程还开着这个文件」。
+//
+// 另外 go-plugin 在非优雅退出的路径上只 Kill、不等进程真正结束，所以还得轮询到文件
+// 真的可写为止，不能 Kill 完就写盘。
+//
+// 来源不在宿主里（首次安装就是这种情况）时什么都不做，不报错。
+func (m *Manager) StopForUpdate(sourceID string) error {
+	it, err := m.lookup(sourceID)
+	if err != nil {
+		return nil
+	}
+
+	m.mu.RLock()
+	running := it.client != nil
+	path := it.exec
+	m.mu.RUnlock()
+
+	m.stopClient(it)
+	if !running {
+		// 本来就没跑起来：文件可能还被别的进程（比如上一次残留的实例）占着，
+		// 所以下面照样等一等，反正等到了就立即返回。
+		if path == "" {
+			path = ResolveExec(m.cfg.Dir, sourceID, it.entry.Exec)
+		}
+		return waitReplaceable(path, updateStopTimeout)
+	}
+
+	m.setState(it, StateStopped, "已停止：正在更新，装好后自动重载")
+	if path == "" {
+		path = ResolveExec(m.cfg.Dir, sourceID, it.entry.Exec)
+	}
+	return waitReplaceable(path, updateStopTimeout)
+}
+
+// waitReplaceable 轮询到 path 能被打开写入，或超时。
+//
+// 判据用「能不能打开写入」：Windows 上正在运行的映像打不开写入，Linux 上写运行中的
+// 可执行文件会拿到 ETXTBSY —— 两边都恰好是我们要等的那个状态。
+func waitReplaceable(path string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var last error
+	for {
+		f, err := os.OpenFile(path, os.O_RDWR, 0)
+		if err == nil {
+			_ = f.Close()
+			return nil
+		}
+		if os.IsNotExist(err) {
+			// 文件还不存在（首次安装），没什么可等的。
+			return nil
+		}
+		last = err
+		if time.Now().After(deadline) {
+			return fmt.Errorf("插件进程未在 %s 内放开 %s：%w", timeout, path, last)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -536,7 +604,7 @@ func (m *Manager) setState(it *item, st State, detail string) {
 	it.state = st
 	it.detail = detail
 	m.mu.Unlock()
-	if st == StateOK || st == StateDisabled {
+	if st == StateOK || st == StateDisabled || st == StateStopped {
 		m.logf(core.LevelInfo, "插件来源状态", "source", it.entry.ID, "state", string(st), "detail", detail)
 		return
 	}

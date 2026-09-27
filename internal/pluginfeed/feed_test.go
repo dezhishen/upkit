@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -414,6 +415,98 @@ plugins:
 	down.AllowDowngrade = true
 	if _, err := Install(context.Background(), srv.Client(), down); err != nil {
 		t.Errorf("显式允许降级后应当可以安装: %v", err)
+	}
+}
+
+// BeforeWrite 必须在覆盖可执行文件之前跑，而且它的错误要能中止安装、留下旧文件。
+//
+// 宿主就是靠这个钩子在 Windows 上先停掉正在运行的插件：正在运行的映像不能被改名覆盖
+// （落盘用的正是「写 .tmp 再改名」），更新会以一句「Access is denied」失败。
+func TestInstallBeforeWriteHook(t *testing.T) {
+	payload := []byte("fake-plugin-binary")
+	sum := sha256.Sum256(payload)
+	sumHex := hex.EncodeToString(sum[:])
+
+	mux := http.NewServeMux()
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	feedBody := fmt.Sprintf(`
+schema: 1
+name: 演示源
+plugins:
+  - id: demo-plugin
+    name: 演示插件
+    version: 1.2.0
+    mode: catalog
+    packages:
+      %s:
+        url: ./demo-plugin.bin
+        sha256: %s
+        size: %d
+`, Platform(), sumHex, len(payload))
+	mux.HandleFunc("/feed.yaml", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, feedBody)
+	})
+	mux.HandleFunc("/demo-plugin.bin", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload)
+	})
+
+	feedURL := srv.URL + "/feed.yaml"
+	feed, err := Fetch(context.Background(), srv.Client(), feedURL)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if err := feed.Validate("2.0.0", Platform()); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	entries, err := Plan(feed, feedURL)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	base := t.TempDir()
+	req := InstallRequest{
+		FeedURL:   feedURL,
+		Entry:     entries[0],
+		PluginDir: filepath.Join(base, "plugin"),
+		CacheDir:  filepath.Join(base, "cache"),
+	}
+	first, err := Install(context.Background(), srv.Client(), req)
+	if err != nil {
+		t.Fatalf("首次安装: %v", err)
+	}
+	old, err := os.ReadFile(first.Path)
+	if err != nil {
+		t.Fatalf("读取插件: %v", err)
+	}
+
+	// 再装一次（覆盖已有文件）：钩子必须在改名之前看到旧内容。
+	var calls int
+	var seenAtHook []byte
+	req.BeforeWrite = func() error {
+		calls++
+		seenAtHook, _ = os.ReadFile(first.Path)
+		return nil
+	}
+	if _, err := Install(context.Background(), srv.Client(), req); err != nil {
+		t.Fatalf("带钩子的安装失败: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("钩子应被调用一次，实际 %d", calls)
+	}
+	if string(seenAtHook) != string(old) {
+		t.Errorf("钩子必须在覆盖之前跑，此刻磁盘上应当还是旧内容")
+	}
+
+	// 钩子报错 → 安装中止，旧文件原封不动。
+	sentinel := errors.New("文件被占用")
+	req.BeforeWrite = func() error { return sentinel }
+	if _, err := Install(context.Background(), srv.Client(), req); !errors.Is(err, sentinel) {
+		t.Fatalf("钩子的错误应当冒出来，实际 %v", err)
+	}
+	if got, err := os.ReadFile(first.Path); err != nil || string(got) != string(old) {
+		t.Errorf("钩子失败时不应改动旧文件: err=%v 内容=%q", err, got)
 	}
 }
 

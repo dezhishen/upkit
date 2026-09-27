@@ -338,6 +338,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.setStatusErr(msg.err)
 			m.appendLog(logEntry{At: time.Now(), Level: "error", App: msg.entry.Plugin.ID, Msg: msg.err.Error()})
+			// 失败前可能已经把插件停掉了（停进程与写盘之间失败），不重载就把它
+			// 留在了「已停止」。
+			_ = m.reloadPlugins()
 			return m, nil
 		}
 		m.appendLog(logEntry{At: time.Now(), Level: "info", App: msg.entry.Plugin.ID,
@@ -356,10 +359,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		// 新插件立刻生效；随后刷新订阅以反映最新状态。
-		if m.host != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			m.host.Load(ctx)
-			cancel()
+		if err := m.reloadPlugins(); err != nil {
+			m.setStatusErr(err)
+			return m, nil
 		}
 		m.setStatus(fmt.Sprintf("已安装 %s v%s", name, msg.entry.Plugin.Version))
 		if m.feedFor == "" {
@@ -1015,6 +1017,23 @@ func (m Model) spinnerText() string {
 }
 
 // enabled 返回条目的启用状态。
+// reloadPlugins 按当前清单重建插件来源。
+//
+// 必须用 Reconfigure 而不是 Load：Load 按构造时捕获的条目工作，看不到刚写进清单的
+// 信任哈希 —— 更新完的插件会拿旧哈希去校验新文件，结果是「更新成功但插件变未信任」。
+func (m *Model) reloadPlugins() error {
+	if m.host == nil || m.afs == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := m.host.Reconfigure(ctx, m.afs.Sources); err != nil {
+		m.appendLog(logEntry{At: time.Now(), Level: "error", Msg: "重载插件来源失败：" + err.Error()})
+		return fmt.Errorf("重载插件来源: %w", err)
+	}
+	return nil
+}
+
 func appEnabled(a *engine.App, afs *apps.File) bool {
 	if a == nil || afs == nil {
 		return true

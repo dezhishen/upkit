@@ -120,6 +120,8 @@ func (m Model) installEntryCmd(rawURL string, e pluginfeed.Entry) tea.Cmd {
 	pluginDir := m.set.Plugins.Dir
 	cacheDir := m.set.Storage.CacheDir
 	store := m.feed
+	// 不能叫 host：Authorize 的参数同名，会遮蔽掉这个捕获的宿主。
+	pluginHost := m.host
 
 	return func() tea.Msg {
 		if ch != nil {
@@ -136,6 +138,14 @@ func (m Model) installEntryCmd(rawURL string, e pluginfeed.Entry) tea.Cmd {
 					return false, nil
 				}
 				return store.HostAuthorized(host), nil
+			},
+			// 盖掉旧文件之前先停掉旧进程：Windows 上正在运行的映像不能被替换，
+			// 否则更新会以「Access is denied」失败。
+			BeforeWrite: func() error {
+				if pluginHost == nil {
+					return nil
+				}
+				return pluginHost.StopForUpdate(e.Plugin.ID)
 			},
 			Progress: func(done, total int64) {
 				if ch == nil {
