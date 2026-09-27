@@ -7,6 +7,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/dezhishen/upkit/internal/apps"
 	"github.com/dezhishen/upkit/internal/core"
@@ -33,6 +34,13 @@ type Options struct {
 	// Host 与 Feed 可为 nil：对应子系统未启用。
 	Host *pluginhost.Manager
 	Feed *pluginfeed.Store
+	// Version 是宿主版本，用于校验订阅里的 min_host_version（dev 不参与比较）。
+	Version string
+	// HTTPClient 为 nil 时按设置构造（含代理）。
+	//
+	// 存在的意义是测试能塞一个信任自签证书的客户端：订阅地址强制 https，拿不到
+	// 注入点就只能上真实网络。
+	HTTPClient *http.Client
 	// EventBuffer 为 0 时用 defaultEventBuffer。
 	EventBuffer int
 }
@@ -53,6 +61,9 @@ type Controller struct {
 	host *pluginhost.Manager
 	feed *pluginfeed.Store
 
+	version    string
+	httpClient *http.Client
+
 	events chan core.Event
 }
 
@@ -66,12 +77,14 @@ func New(opts Options) (*Controller, error) {
 		buf = defaultEventBuffer
 	}
 	c := &Controller{
-		set:    opts.Settings,
-		afs:    opts.Apps,
-		log:    opts.Logger,
-		host:   opts.Host,
-		feed:   opts.Feed,
-		events: make(chan core.Event, buf),
+		set:        opts.Settings,
+		afs:        opts.Apps,
+		log:        opts.Logger,
+		host:       opts.Host,
+		feed:       opts.Feed,
+		version:    opts.Version,
+		httpClient: opts.HTTPClient,
+		events:     make(chan core.Event, buf),
 	}
 
 	// 注意别把 nil 的 *logging.Manager 直接塞进接口字段：那样接口非 nil，

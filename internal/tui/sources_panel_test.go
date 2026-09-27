@@ -17,13 +17,14 @@ import (
 
 // 来源面板应当列出清单里声明的插件来源。
 func TestSourcesPanelRendersPluginRows(t *testing.T) {
-	m := newTestModel(t)
-	m.afs.Sources = []apps.SourceSpec{{
-		ID:     "corp-index",
-		Name:   "企业源",
-		Kind:   "plugin",
-		Config: map[string]string{"endpoint": "https://x"},
-	}}
+	m := newTestModelWith(t, func(o *control.Options) {
+		o.Apps.Sources = []apps.SourceSpec{{
+			ID:     "corp-index",
+			Name:   "企业源",
+			Kind:   "plugin",
+			Config: map[string]string{"endpoint": "https://x"},
+		}}
+	})
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(t, m, key('6'))
 
@@ -47,8 +48,9 @@ func TestSourcesPanelEmptyState(t *testing.T) {
 
 // 插件配置的入口就在插件条目上：按 c 进入该插件的配置视图。
 func TestSourcesPanelOpensPluginConfig(t *testing.T) {
-	m := newTestModel(t)
-	m.afs.Sources = []apps.SourceSpec{{ID: "corp-index", Name: "企业源", Kind: "plugin"}}
+	m := newTestModelWith(t, func(o *control.Options) {
+		o.Apps.Sources = []apps.SourceSpec{{ID: "corp-index", Name: "企业源", Kind: "plugin"}}
+	})
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(t, m, key('6'))
 	m = update(t, m, key('c'))
@@ -70,12 +72,11 @@ func TestSourcesPanelOpensPluginConfig(t *testing.T) {
 
 // 首次添加订阅必须先确认启用订阅功能，再输入地址（默认不订阅）。
 func TestSubscriptionAuthorizationFlow(t *testing.T) {
-	m := newTestModel(t)
 	store, err := pluginfeed.LoadStore(filepath.Join(t.TempDir(), pluginfeed.FileName))
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	m.feed = store
+	m := newTestModelWith(t, func(o *control.Options) { o.Feed = store })
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(t, m, key('6'))
@@ -100,12 +101,11 @@ func TestSubscriptionAuthorizationFlow(t *testing.T) {
 
 // 内置官方源：入口存在，且同样要走授权流程（内置不绕过任何确认）。
 func TestBuiltinFeedEntry(t *testing.T) {
-	m := newTestModel(t)
 	store, err := pluginfeed.LoadStore(filepath.Join(t.TempDir(), pluginfeed.FileName))
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	m.feed = store
+	m := newTestModelWith(t, func(o *control.Options) { o.Feed = store })
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(t, m, key('6'))
@@ -144,13 +144,14 @@ func TestBuiltinFeedEntry(t *testing.T) {
 	}
 }
 func TestRemoveSubscriptionOnlyAppliesToSubscriptionRows(t *testing.T) {
-	m := newTestModel(t)
-	m.afs.Sources = []apps.SourceSpec{{ID: "corp-index", Name: "企业源", Kind: "plugin"}}
 	store, err := pluginfeed.LoadStore(filepath.Join(t.TempDir(), pluginfeed.FileName))
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	m.feed = store
+	m := newTestModelWith(t, func(o *control.Options) {
+		o.Feed = store
+		o.Apps.Sources = []apps.SourceSpec{{ID: "corp-index", Name: "企业源", Kind: "plugin"}}
+	})
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(t, m, key('6'))
@@ -166,19 +167,17 @@ func TestRemoveSubscriptionOnlyAppliesToSubscriptionRows(t *testing.T) {
 
 // 切换来源启停会写回清单（而不是只改内存）。
 func TestToggleSourceWritesBackToManifest(t *testing.T) {
-	m := newTestModel(t)
 	path := filepath.Join(t.TempDir(), "apps.yaml")
-	m.afs.Path = path
-	m.afs.Sources = []apps.SourceSpec{{ID: "corp-index", Name: "企业源", Kind: "plugin"}}
+	m := newTestModelWith(t, func(o *control.Options) {
+		o.Apps.Path = path
+		o.Apps.Sources = []apps.SourceSpec{{ID: "corp-index", Name: "企业源", Kind: "plugin"}}
+	})
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(t, m, key('6'))
 	// 空格：真实按键是 KeyRunes，字符串为 " "（bubbletea 也可能给 KeySpace，两种都要认）。
 	m = update(t, m, key(' '))
 
-	if m.afs.Sources[0].EnabledValue() {
-		t.Fatal("space 应停用该来源")
-	}
 	reloaded, err := apps.Load(path)
 	if err != nil {
 		t.Fatalf("重新加载清单: %v", err)
@@ -211,14 +210,19 @@ func newTestHost(t *testing.T, dir string, ids ...string) *pluginhost.Manager {
 	return host
 }
 
-// newSourcesTestModel 造一个带插件宿主的模型。
+// newSourcesTestModel 造一个带插件宿主、清单落在 dir/apps.yaml 的模型。
 //
-// 宿主由控制层持有，所以要从这里注入；往 Model 上挂字段的话，来源面板走控制层取
-// 数，看不到那个宿主。
-func newSourcesTestModel(t *testing.T, dir string, ids ...string) Model {
+// 宿主与清单都由控制层持有，所以要从这里注入；往 Model 上挂字段的话，来源面板走
+// 控制层取数，看不到它们。第二个返回值是清单路径，便于测试从磁盘回读校验。
+func newSourcesTestModel(t *testing.T, dir string, ids ...string) (Model, string) {
 	t.Helper()
 	host := newTestHost(t, dir, ids...)
-	return newTestModelWith(t, func(o *control.Options) { o.Host = host })
+	path := filepath.Join(dir, "apps.yaml")
+	m := newTestModelWith(t, func(o *control.Options) {
+		o.Host = host
+		o.Apps.Path = path
+	})
+	return m, path
 }
 
 // 手工放进 plugin/ 的插件：清单里没有，但宿主发现了，面板必须列出来。
@@ -226,7 +230,7 @@ func newSourcesTestModel(t *testing.T, dir string, ids ...string) Model {
 // 这是最需要操作的一种状态 —— 未信任、因此没启动。如果连行都不出现，用户就只剩下
 // 「去翻日志」和「去改 YAML」，而面板的空状态恰好在推荐用户手工放置插件。
 func TestSourcesPanelListsDiscoveredSources(t *testing.T) {
-	m := newSourcesTestModel(t, t.TempDir(), "corp-index")
+	m, _ := newSourcesTestModel(t, t.TempDir(), "corp-index")
 
 	rows := m.sourceRows()
 	if len(rows) != 1 || rows[0].info.ID != "corp-index" {
@@ -253,9 +257,7 @@ func TestSourcesPanelListsDiscoveredSources(t *testing.T) {
 
 // 按 t 信任：弹出确认框（含路径与哈希）→ 写进清单 → 立刻生效。
 func TestTrustSourceWritesManifest(t *testing.T) {
-	m := newSourcesTestModel(t, t.TempDir(), "corp-index")
-	path := filepath.Join(t.TempDir(), "apps.yaml")
-	m.afs.Path = path
+	m, path := newSourcesTestModel(t, t.TempDir(), "corp-index")
 	wantSHA := m.sourceRows()[0].info.SHA256
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -276,16 +278,6 @@ func TestTrustSourceWritesManifest(t *testing.T) {
 
 	m = update(t, m, key('y'))
 
-	if len(m.afs.Sources) != 1 {
-		t.Fatalf("信任后清单应有 1 条来源，实际 %+v", m.afs.Sources)
-	}
-	if m.afs.Sources[0].Trust != wantSHA {
-		t.Fatalf("信任哈希没写进内存清单: %+v", m.afs.Sources[0])
-	}
-	if m.afs.Sources[0].Kind != apps.KindPlugin {
-		t.Errorf("补出来的条目 kind 应为 plugin，实际 %q", m.afs.Sources[0].Kind)
-	}
-
 	// 落盘：重开进程后信任还在，否则用户每次启动都要重新点一遍。
 	reloaded, err := apps.Load(path)
 	if err != nil {
@@ -293,6 +285,9 @@ func TestTrustSourceWritesManifest(t *testing.T) {
 	}
 	if len(reloaded.Sources) != 1 || reloaded.Sources[0].Trust != wantSHA {
 		t.Fatalf("信任没有落盘: %+v", reloaded.Sources)
+	}
+	if reloaded.Sources[0].Kind != apps.KindPlugin {
+		t.Errorf("补出来的条目 kind 应为 plugin，实际 %q", reloaded.Sources[0].Kind)
 	}
 
 	// 生效：信任之后它不再是「未信任」。
@@ -303,7 +298,7 @@ func TestTrustSourceWritesManifest(t *testing.T) {
 
 // 清单里没有的来源：启停要提示先信任，而不是静默无反应。
 func TestToggleDiscoveredSourceExplainsTrust(t *testing.T) {
-	m := newSourcesTestModel(t, t.TempDir(), "corp-index")
+	m, _ := newSourcesTestModel(t, t.TempDir(), "corp-index")
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(t, m, key('6'))
@@ -317,8 +312,9 @@ func TestToggleDiscoveredSourceExplainsTrust(t *testing.T) {
 // 提示行必须落在面板内宽以内：超宽会被 Frame 折行，把最后几行来源挤出可视区。
 func TestSourcesHintFitsPanelWidth(t *testing.T) {
 	const hint = "enter/c 进入   t 信任   o 官方源   a 加订阅   d 删除   space 启停   r 重载"
-	m := newTestModel(t)
-	m.afs.Sources = []apps.SourceSpec{{ID: "corp-index", Name: "企业源", Kind: "plugin"}}
+	m := newTestModelWith(t, func(o *control.Options) {
+		o.Apps.Sources = []apps.SourceSpec{{ID: "corp-index", Name: "企业源", Kind: "plugin"}}
+	})
 
 	out := m.viewSources(80, 20)
 	// 折行的断点正好落在提示里，Contains 就会失败 —— 这是最直接的不折行断言。
@@ -332,9 +328,7 @@ func TestSourcesHintFitsPanelWidth(t *testing.T) {
 // 文档让用户把 trust 写进清单，而按 r 若只重建内存里的那份快照，手改的内容永远进
 // 不来，这条路就等于没通。
 func TestReloadSourcesReadsManifestFromDisk(t *testing.T) {
-	m := newSourcesTestModel(t, t.TempDir())
-	path := filepath.Join(t.TempDir(), "apps.yaml")
-	m.afs.Path = path
+	m, path := newSourcesTestModel(t, t.TempDir())
 
 	// 磁盘上有、内存里没有的一条来源。
 	seed := apps.Default()
@@ -348,10 +342,12 @@ func TestReloadSourcesReadsManifestFromDisk(t *testing.T) {
 	m = update(t, m, key('6'))
 	m = update(t, m, key('r'))
 
-	if len(m.afs.Sources) != 1 || m.afs.Sources[0].ID != "corp-index" {
-		t.Fatalf("r 应当把磁盘上的来源读进来，实际 %+v", m.afs.Sources)
+	// 手改的内容要真的进得来：面板上多出这条来源就说明清单被重读了。
+	rows := m.sourceRows()
+	if len(rows) != 1 || rows[0].info.ID != "corp-index" {
+		t.Fatalf("r 应当把磁盘上的来源读进来，实际 %+v", rows)
 	}
-	if m.afs.Sources[0].Trust != "deadbeef" {
-		t.Fatalf("手工写入的 trust 没有被读进来: %+v", m.afs.Sources[0])
+	if !rows[0].info.Declared {
+		t.Error("读进来的来源应当算作清单里已声明")
 	}
 }

@@ -8,7 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/dezhishen/upkit/internal/apps"
+	"github.com/dezhishen/upkit/internal/control"
 	"github.com/dezhishen/upkit/internal/pluginfeed"
 )
 
@@ -18,7 +18,6 @@ var errFeedStub = errors.New("boom")
 // feedTestModel 返回一个已进入订阅详情、并载入固定条目的模型。
 func feedTestModel(t *testing.T, entries ...pluginfeed.Entry) Model {
 	t.Helper()
-	m := newTestModel(t)
 	store, err := pluginfeed.LoadStore(filepath.Join(t.TempDir(), pluginfeed.FileName))
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
@@ -27,7 +26,7 @@ func feedTestModel(t *testing.T, entries ...pluginfeed.Entry) Model {
 	if err := store.AuthorizeFeature(); err != nil {
 		t.Fatalf("AuthorizeFeature: %v", err)
 	}
-	m.feed = store
+	m := newTestModelWith(t, func(o *control.Options) { o.Feed = store })
 	m.feedFor = "https://example.com/plugins.yaml"
 	m.feedLoaded = true
 	m.feedEntries = entries
@@ -136,7 +135,7 @@ func TestFeedDetailCrossOriginNeedsConfirm(t *testing.T) {
 	if c := got.confirm.OnYes(&got); c == nil {
 		t.Fatalf("同意后应返回安装命令")
 	}
-	if !got.feed.HostAuthorized("cdn.example.com") {
+	if !got.ctrl.HostAuthorized("cdn.example.com") {
 		t.Fatalf("同意后域名应被授权")
 	}
 	if !got.feedBusy {
@@ -228,48 +227,6 @@ func TestInstallDoneReloadsFeed(t *testing.T) {
 	}
 	if m2.fatal == nil {
 		t.Fatalf("失败后应提示错误")
-	}
-}
-
-// 订阅装完就该能用：信任在安装成功后一并写进清单。
-//
-// 不写的话插件会停在「未信任」而不被启动 —— 而这条路已经过用户三级授权，包的
-// 摘要也在下载后强制校验过，不该再让用户去改 YAML。
-func TestInstallRecordsTrustFromSubscription(t *testing.T) {
-	sha := strings.Repeat("a", 64)
-	e := sameOriginPkg("alpha", "Alpha", "1.0.0", sha)
-	m := feedTestModel(t, e)
-	path := filepath.Join(t.TempDir(), "apps.yaml")
-	m.afs.Path = path
-
-	next, _ := m.Update(installDoneMsg{entry: e, result: &pluginfeed.Installed{ID: "alpha", SHA256: sha}})
-	_ = next
-
-	reloaded, err := apps.Load(path)
-	if err != nil {
-		t.Fatalf("重新加载清单: %v", err)
-	}
-	if len(reloaded.Sources) != 1 || reloaded.Sources[0].ID != "alpha" {
-		t.Fatalf("订阅安装后应写入信任条目，实际 %+v", reloaded.Sources)
-	}
-	if reloaded.Sources[0].Trust != sha {
-		t.Fatalf("信任哈希不对: %+v", reloaded.Sources[0])
-	}
-}
-
-// 关掉自动加载时留回逐个确认：不写信任，插件保持未信任由用户按 t 决定。
-func TestInstallKeepsUntrustedWhenAutoLoadDisabled(t *testing.T) {
-	sha := strings.Repeat("a", 64)
-	e := sameOriginPkg("alpha", "Alpha", "1.0.0", sha)
-	m := feedTestModel(t, e)
-	m.afs.Path = filepath.Join(t.TempDir(), "apps.yaml")
-	m.set.Plugins.AutoLoadTrusted = false
-
-	next, _ := m.Update(installDoneMsg{entry: e, result: &pluginfeed.Installed{ID: "alpha", SHA256: sha}})
-	m = next.(Model)
-
-	if len(m.afs.Sources) != 0 {
-		t.Fatalf("关掉自动加载时不应写入信任，实际 %+v", m.afs.Sources)
 	}
 }
 

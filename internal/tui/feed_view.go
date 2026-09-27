@@ -3,16 +3,12 @@ package tui
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dezhishen/upkit/internal/pluginfeed"
-	"github.com/dezhishen/upkit/internal/pluginhost"
-	"github.com/dezhishen/upkit/internal/settings"
 )
 
 // 订阅详情的异步消息。
@@ -39,123 +35,39 @@ const progressDone = int64(-1)
 // installProgress 是一次下载进度快照。
 type installProgress struct{ done, total int64 }
 
-// feedClient 是订阅拉取与插件下载共用的 HTTP 客户端。
-//
-// 下载可能几十 MB，所以超时给得很宽松；订阅拉取单独用短超时（见 loadFeedCmd）。
-// 代理走用户配置：只认环境变量会让「软件更新正常、订阅全部失败」变得难以排查。
-func (m Model) feedClient() *http.Client {
-	c := &http.Client{Timeout: 30 * time.Minute}
-	if proxy := proxyFromSettings(m.set); proxy != "" {
-		tr, ok := http.DefaultTransport.(*http.Transport)
-		if !ok {
-			return c
-		}
-		clone := tr.Clone()
-		if u, err := url.Parse(proxy); err == nil {
-			clone.Proxy = http.ProxyURL(u)
-			c.Transport = clone
-		}
-	}
-	return c
-}
-
-// proxyFromSettings 取出用户配置的代理地址。
-func proxyFromSettings(s *settings.Settings) string {
-	if s == nil {
-		return ""
-	}
-	return strings.TrimSpace(s.Network.Proxy)
-}
-
-// hostVersionForFeed 返回用于校验 min_host_version 的宿主版本。
-//
-// 开发版本（dev）不参与比较，否则官方源的 min_host_version 会把本地构建挡在门外。
-func (m Model) hostVersionForFeed() string {
-	v := strings.TrimSpace(m.opts.Version)
-	if v == "" || v == "dev" {
-		return ""
-	}
-	return v
-}
+// feedFetchTimeout 是订阅拉取（清单本身很小）的超时。
+const feedFetchTimeout = 60 * time.Second
 
 // loadFeedCmd 拉取订阅、校验、展开成当前平台的条目，并标注本机已装版本。
 func (m Model) loadFeedCmd(rawURL string) tea.Cmd {
-	pluginDir := m.set.Plugins.Dir
-	hostVersion := m.hostVersionForFeed()
+	ctrl := m.ctrl
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), feedFetchTimeout)
 		defer cancel()
-
-		feed, err := pluginfeed.Fetch(ctx, m.feedClient(), rawURL)
-		if err != nil {
-			return feedLoadedMsg{url: rawURL, err: err}
-		}
-		if err := feed.Validate(hostVersion, pluginfeed.Platform()); err != nil {
-			return feedLoadedMsg{url: rawURL, err: err}
-		}
-		entries, err := pluginfeed.Plan(feed, rawURL)
-		if err != nil {
-			return feedLoadedMsg{url: rawURL, err: err}
-		}
-		// 本机已装的版本来自插件目录里的描述文件（订阅安装时会写入 version/sha256）。
-		if manifests, err := pluginhost.Discover(pluginDir); err == nil {
-			installed := make(map[string]pluginhost.Manifest, len(manifests))
-			for _, man := range manifests {
-				installed[man.ID] = man
-			}
-			for i := range entries {
-				if man, ok := installed[entries[i].Plugin.ID]; ok {
-					entries[i].Installed = man.Version
-					entries[i].InstalledSHA256 = man.SHA256
-				}
-			}
-		}
-		return feedLoadedMsg{url: rawURL, entries: entries}
+		entries, err := ctrl.FeedEntries(ctx, rawURL)
+		return feedLoadedMsg{url: rawURL, entries: entries, err: err}
 	}
 }
 
 // installEntryCmd 下载并安装一个条目；进度通过 installCh 回传。
+//
+// 授权查表、覆盖前停掉旧进程、装完记信任、重建插件来源这一串都在控制层里；这里只负责
+// 把下载进度接到界面的通道上。
 func (m Model) installEntryCmd(rawURL string, e pluginfeed.Entry) tea.Cmd {
 	ch := m.installCh
-	pluginDir := m.set.Plugins.Dir
-	cacheDir := m.set.Storage.CacheDir
-	store := m.feed
-	// 不能叫 host：Authorize 的参数同名，会遮蔽掉这个捕获的宿主。
-	pluginHost := m.host
-
+	ctrl := m.ctrl
 	return func() tea.Msg {
 		if ch != nil {
 			defer func() { ch <- installProgress{done: progressDone} }()
 		}
-		res, err := pluginfeed.Install(context.Background(), m.feedClient(), pluginfeed.InstallRequest{
-			FeedURL:   rawURL,
-			Entry:     e,
-			PluginDir: pluginDir,
-			CacheDir:  cacheDir,
-			// 跨域授权已经在界面上处理过了，这里只做纯查表（不能在这里弹窗）。
-			Authorize: func(host string) (bool, error) {
-				if store == nil {
-					return false, nil
-				}
-				return store.HostAuthorized(host), nil
-			},
-			// 盖掉旧文件之前先停掉旧进程：Windows 上正在运行的映像不能被替换，
-			// 否则更新会以「Access is denied」失败。
-			BeforeWrite: func() error {
-				if pluginHost == nil {
-					return nil
-				}
-				return pluginHost.StopForUpdate(e.Plugin.ID)
-			},
-			Progress: func(done, total int64) {
-				if ch == nil {
-					return
-				}
-				select {
-				case ch <- installProgress{done: done, total: total}:
-				default: // 界面来不及消费时丢帧，不要拖慢下载
-				}
-			},
+		res, err := ctrl.InstallPlugin(context.Background(), rawURL, e, func(done, total int64) {
+			if ch == nil {
+				return
+			}
+			select {
+			case ch <- installProgress{done: done, total: total}:
+			default: // 界面来不及消费时丢帧，不要拖慢下载
+			}
 		})
 		return installDoneMsg{entry: e, result: res, err: err}
 	}
@@ -184,7 +96,7 @@ func (m Model) startInstall(e pluginfeed.Entry) (tea.Model, tea.Cmd) {
 		m.setStatus("已有安装任务在进行")
 		return m, nil
 	}
-	if m.feed == nil {
+	if m.ctrl == nil || !m.ctrl.FeedAvailable() {
 		m.setStatusErr(fmt.Errorf("订阅模块未启用"))
 		return m, nil
 	}
@@ -203,7 +115,7 @@ func (m Model) startInstall(e pluginfeed.Entry) (tea.Model, tea.Cmd) {
 	}
 
 	url := m.feedFor
-	if e.Location.NeedsAuthorization() && !m.feed.HostAuthorized(e.Location.Host) {
+	if e.Location.NeedsAuthorization() && !m.ctrl.HostAuthorized(e.Location.Host) {
 		host := e.Location.Host
 		entry := e
 		m.confirm = &confirmBox{
@@ -211,7 +123,7 @@ func (m Model) startInstall(e pluginfeed.Entry) (tea.Model, tea.Cmd) {
 			Message: fmt.Sprintf("「%s」的安装包放在 %s，与订阅不同源。\n\n"+
 				"信任该域名并继续安装？", entry.Plugin.Name, host),
 			OnYes: func(mm *Model) tea.Cmd {
-				if err := mm.feed.AuthorizeHost(host, url); err != nil {
+				if err := mm.ctrl.AuthorizeHost(host, url); err != nil {
 					mm.setStatusErr(err)
 					return nil
 				}

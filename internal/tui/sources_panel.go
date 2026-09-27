@@ -38,8 +38,8 @@ func (m Model) sourceRows() []sourceRow {
 		rows = append(rows, sourceRow{info: info})
 	}
 
-	if m.feed != nil {
-		for _, sub := range m.feed.Subscriptions() {
+	if subs := m.ctrl.Subscriptions(); len(subs) > 0 {
+		for _, sub := range subs {
 			rows = append(rows, sourceRow{isSubscription: true, sub: sub})
 		}
 	}
@@ -361,18 +361,18 @@ func (m *Model) writeSourceConfig(id, key, value string) tea.Cmd {
 }
 
 func (m Model) addSubscription() (tea.Model, tea.Cmd) {
-	if m.feed == nil {
+	if m.ctrl == nil || !m.ctrl.FeedAvailable() {
 		m.setStatusErr(fmt.Errorf("订阅模块未启用"))
 		return m, nil
 	}
 	// 首次使用：先让用户确认启用订阅功能（默认关闭）。
-	if !m.feed.FeatureAuthorized() {
+	if !m.ctrl.FeatureAuthorized() {
 		m.confirm = &confirmBox{
 			Title: "启用插件订阅",
 			Message: "订阅会从网络下载插件可执行文件并在本机运行。\n\n" +
 				"启用后，每一条订阅与每一个跨域下载域名都还需要单独确认。\n\n是否启用订阅功能？",
 			OnYes: func(mm *Model) tea.Cmd {
-				if err := mm.feed.AuthorizeFeature(); err != nil {
+				if err := mm.ctrl.AuthorizeFeature(); err != nil {
 					mm.setStatusErr(err)
 					return nil
 				}
@@ -390,23 +390,21 @@ func (m Model) addSubscription() (tea.Model, tea.Cmd) {
 //
 // 只是省掉手输地址：订阅功能仍然默认关闭，域名仍然需要单独确认信任。
 func (m Model) addBuiltinSubscription() (tea.Model, tea.Cmd) {
-	if m.feed == nil {
+	if m.ctrl == nil || !m.ctrl.FeedAvailable() {
 		m.setStatusErr(fmt.Errorf("订阅模块未启用"))
 		return m, nil
 	}
-	for _, sub := range m.feed.Subscriptions() {
-		if pluginfeed.IsBuiltinFeed(sub.URL) {
-			m.status = pluginfeed.BuiltinFeedName + " 已在订阅列表中"
-			return m, nil
-		}
+	if m.ctrl.HasBuiltinSubscription() {
+		m.status = pluginfeed.BuiltinFeedName + " 已在订阅列表中"
+		return m, nil
 	}
-	if !m.feed.FeatureAuthorized() {
+	if !m.ctrl.FeatureAuthorized() {
 		m.confirm = &confirmBox{
 			Title: "启用插件订阅",
 			Message: "订阅会从网络下载插件可执行文件并在本机运行。\n\n" +
 				"接下来会添加「" + pluginfeed.BuiltinFeedName + "」，仍需你确认信任其域名。\n\n是否启用订阅功能？",
 			OnYes: func(mm *Model) tea.Cmd {
-				if err := mm.feed.AuthorizeFeature(); err != nil {
+				if err := mm.ctrl.AuthorizeFeature(); err != nil {
 					mm.setStatusErr(err)
 					return nil
 				}
@@ -424,14 +422,14 @@ func (m Model) addBuiltinSubscription() (tea.Model, tea.Cmd) {
 //
 // 返回而不是直接设置 m.prompt：调用方多为值接收者，直接改字段会丢。
 func (m Model) subscriptionURLPrompt(prefill string) *promptBox {
-	feed := m.feed
+	ctrl := m.ctrl
 	return newPromptBox("添加订阅", "订阅地址（.json / .yaml / .yml）", prefill, false,
 		func(mm *Model, v string) tea.Cmd {
 			raw := strings.TrimSpace(v)
 			if raw == "" {
 				return nil
 			}
-			host, err := pluginfeed.FeedHost(raw)
+			host, err := ctrl.FeedHost(raw)
 			if err != nil {
 				mm.setStatusErr(err)
 				return nil
@@ -442,7 +440,7 @@ func (m Model) subscriptionURLPrompt(prefill string) *promptBox {
 				Message: fmt.Sprintf("将信任来自 %s 的插件下载。\n\n"+
 					"该域名提供的插件会在本机运行；如果包地址指向别的域名，安装时会再单独询问。\n\n确认添加这条订阅？", host),
 				OnYes: func(mmm *Model) tea.Cmd {
-					sub, err := feed.AddSubscription(raw)
+					sub, err := ctrl.AddSubscription(raw)
 					if err != nil {
 						mmm.setStatusErr(err)
 						return nil
@@ -456,7 +454,7 @@ func (m Model) subscriptionURLPrompt(prefill string) *promptBox {
 }
 
 func (m Model) removeSubscription(rows []sourceRow) (tea.Model, tea.Cmd) {
-	if m.feed == nil {
+	if m.ctrl == nil || !m.ctrl.FeedAvailable() {
 		m.setStatusErr(fmt.Errorf("订阅模块未启用"))
 		return m, nil
 	}
@@ -465,12 +463,12 @@ func (m Model) removeSubscription(rows []sourceRow) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	url := rows[m.srcCursor].sub.URL
-	feed := m.feed
+	ctrl := m.ctrl
 	m.confirm = &confirmBox{
 		Title:   "删除订阅",
 		Message: "确定删除这条订阅吗？\n\n" + url + "\n\n已安装的插件不会被卸载。",
 		OnYes: func(mm *Model) tea.Cmd {
-			if err := feed.RemoveSubscription(url); err != nil {
+			if err := ctrl.RemoveSubscription(url); err != nil {
 				mm.setStatusErr(err)
 				return nil
 			}
@@ -494,10 +492,7 @@ func (m Model) toggleSource(rows []sourceRow) (tea.Model, tea.Cmd) {
 	}
 	row := rows[m.srcCursor]
 	if row.isSubscription {
-		if m.feed == nil {
-			return m, nil
-		}
-		if err := m.feed.SetSubscriptionEnabled(row.sub.URL, !row.sub.EnabledValue()); err != nil {
+		if err := m.ctrl.SetSubscriptionEnabled(row.sub.URL, !row.sub.EnabledValue()); err != nil {
 			m.setStatusErr(err)
 			return m, nil
 		}

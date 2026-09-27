@@ -14,13 +14,11 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/dezhishen/upkit/internal/apps"
 	"github.com/dezhishen/upkit/internal/control"
 	"github.com/dezhishen/upkit/internal/core"
 	"github.com/dezhishen/upkit/internal/engine"
 	"github.com/dezhishen/upkit/internal/logging"
 	"github.com/dezhishen/upkit/internal/pluginfeed"
-	"github.com/dezhishen/upkit/internal/pluginhost"
 	"github.com/dezhishen/upkit/internal/settings"
 )
 
@@ -138,7 +136,6 @@ type Model struct {
 
 	// 下面几个是迁移期间的过渡字段（New 从控制层取出），对应子系统收完就删。
 	set *settings.Settings
-	afs *apps.File
 	log *logging.Manager
 
 	width, height int
@@ -165,8 +162,6 @@ type Model struct {
 	setDirty  bool
 
 	// 来源面板：插件配置的编辑入口就在插件条目上。
-	host      *pluginhost.Manager
-	feed      *pluginfeed.Store
 	srcCursor int
 	cfgFor    string // 非空表示正在编辑该来源的配置
 	cfgCursor int
@@ -208,10 +203,9 @@ func New(opts Options) Model {
 		keys:      newKeyMap(),
 		helpView:  newHelpModel(opts.NoColor),
 	}
-	// 过渡期：下面几个服务尚未全部收进控制层，先从它那里取一份。
+	// 过渡期：设置与日志尚未全部收进控制层，先从它那里取一份。
 	if c := opts.Ctrl; c != nil {
-		m.set, m.afs, m.log = c.Settings(), c.Manifest(), c.Logger()
-		m.host, m.feed = c.Host(), c.Feed()
+		m.set, m.log = c.Settings(), c.Logger()
 	}
 	if m.log != nil {
 		for _, r := range m.log.Ring().Snapshot() {
@@ -338,31 +332,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.setStatusErr(msg.err)
 			m.appendLog(logEntry{At: time.Now(), Level: "error", App: msg.entry.Plugin.ID, Msg: msg.err.Error()})
-			// 失败前可能已经把插件停掉了（停进程与写盘之间失败），不重载就把它
-			// 留在了「已停止」。
-			_ = m.reloadPlugins()
 			return m, nil
 		}
 		m.appendLog(logEntry{At: time.Now(), Level: "info", App: msg.entry.Plugin.ID,
 			Msg: "已从订阅安装 v" + msg.entry.Plugin.Version})
-		// 把信任一并记进清单，否则刚装好的插件会停在「未信任」而不启动。
-		//
-		// 依据就在安装这一步本身：走的是用户逐级授权过的订阅（功能开关 → 订阅域名 →
-		// 跨域下载域名），包的 sha256 也在下载后被强制校验过，那个摘要就是用户授权过的
-		// 内容。关掉 Plugins.AutoLoadTrusted 则退回逐个确认（来源面板按 t）。
-		if m.set != nil && m.set.Plugins.AutoLoadTrusted &&
-			m.afs != nil && msg.result != nil && msg.result.ID != "" && msg.result.SHA256 != "" {
-			m.afs.SetSourceTrust(msg.result.ID, msg.result.SHA256)
-			if err := m.afs.Save(); err != nil {
-				m.setStatusErr(fmt.Errorf("记录插件信任失败: %w", err))
-				return m, nil
-			}
-		}
-		// 新插件立刻生效；随后刷新订阅以反映最新状态。
-		if err := m.reloadPlugins(); err != nil {
-			m.setStatusErr(err)
-			return m, nil
-		}
+		// 记信任、重建插件来源（失败时也重建，免得把已停掉的插件留在停止态）这些都在
+		// 控制层的 InstallPlugin 里做完了 —— 多步流程只在一个地方，这里只更新界面。
 		m.setStatus(fmt.Sprintf("已安装 %s v%s", name, msg.entry.Plugin.Version))
 		if m.feedFor == "" {
 			// 安装期间离开了详情页，不需要（也无法）刷新。
@@ -991,27 +966,6 @@ func (m Model) pendingIDs() []string {
 
 func (m Model) spinnerText() string {
 	return m.spin.View()
-}
-
-// enabled 返回条目的启用状态。
-// reloadPlugins 按当前清单重建插件来源。
-//
-// 必须走 Reconfigure（控制层里）而不是 Load：Load 按构造时捕获的条目工作，看不到
-// 刚写进清单的信任哈希 —— 更新完的插件会拿旧哈希去校验新文件，结果是「更新成功但
-// 插件变未信任」。
-func (m *Model) reloadPlugins() error {
-	// 没有插件宿主时什么都不用做：这是「插件子系统未启用」的常态，不是错误。
-	// （m.host 是过渡字段，等安装流程整体收进控制层后由那边判断。）
-	if m.ctrl == nil || m.host == nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := m.ctrl.ReloadPlugins(ctx); err != nil {
-		m.appendLog(logEntry{At: time.Now(), Level: "error", Msg: "重载插件来源失败：" + err.Error()})
-		return fmt.Errorf("重载插件来源: %w", err)
-	}
-	return nil
 }
 
 // appEnabled 报告某个软件是否启用（清单里没有该条目时视为启用）。
