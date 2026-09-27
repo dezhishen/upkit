@@ -100,7 +100,7 @@ jobs:
           check ./internal/version       74
           check ./internal/pluginfeed    68
           check ./internal/apps          68
-          check ./internal/fsutil        60
+          check ./internal/fsutil        80
           check ./internal/settings      80
           check ./internal/github        78
           check ./internal/logging       66
