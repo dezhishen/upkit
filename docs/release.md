@@ -239,10 +239,13 @@ changelog 的起点始终是**最近一个正式版**：预览版据此列出自
 | tag 已存在导致流水线报错 | 说明该版本已发过；换一个版本位，或先删 tag |
 | 构建失败 | 修好推到 `main`，再跑一次；tag 若已打上，先删掉它 |
 | Release 建好了但产物不全 | 重跑工作流：`publish` 检测到 Release 已存在时会**覆盖附件并重新生成 notes**，不会报错 |
+| 流水线全绿，但 Releases 页面看不到任何东西 | 多半是**草稿**（draft）：`gh release view` 看得见它，而 Releases 页面、REST 按 tag 查、附件下载链接全都看不到。草稿不绑定 tag，所以删 tag 也带不走它 —— 判定「已存在」后流水线只会往里传附件，于是每次都是假绿灯。重跑即可：`publish` 现在会显式 `--draft=false`，并在最后用 REST 复核 `draft=false` 与附件数量 |
 | 想先看看效果 | 勾 `dry_run` 演练：走完 verify → version → build，但不打 tag、不发版 |
 | tag 已打出，但 `publish` 失败 | 见下节「流水线本身有 bug」 |
 
 `publish` 是幂等的（`gh release upload --clobber` + `gh release edit`），所以重跑安全。
+最后那道复核特意查 REST 而不是 `gh release view`：口径是「外面的人能看见」，不是
+「gh 自己看得见」，草稿恰好卡在这两者之间。
 
 ### 流水线本身有 bug 时怎么救
 

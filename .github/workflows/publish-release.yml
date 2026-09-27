@@ -148,11 +148,20 @@ jobs:
             exit 0
           fi
 
-          # gh release view 在这里是「探测」而不是「命令」，失败是预期内的，
-          # 但失败原因仍要看一眼 —— 鉴权问题会伪装成「release 不存在」。
+          # 探测用 --json 拿 isDraft，而不是解析 gh release view 的文本输出 ——
+          # 这里真正要区分的是「已发布的」和「草稿」，因为草稿对外完全不可见：
+          # Releases 页面没有它，REST 按 tag 查不到它，附件下载链接也不存在。
+          # 只看得到「存在」就会掉进下面的更新分支，把附件反复传进一个永远不公开的
+          # 草稿里，而每一次都报成功。v0.0.1 卡在这里就是因为它是个草稿，且草稿不绑定
+          # tag，所以删了三次 tag 都没带走它；流水线每次判成「重跑」，后置检查又查不到
+          # 草稿于是报"gh 报了成功但实际没发布"——其实 create 早就不再执行了。
+          #
+          # 探测失败仍是预期内的（首次发版时确实不存在），但原因要看一眼：
+          # 鉴权问题会伪装成「release 不存在」。
           view_ok=0
-          view_out="$(gh release view "$VERSION" 2>&1)" || view_ok=$?
-          echo "::notice::gh release view 退出码=$view_ok 输出=$(emit "${view_out}")"
+          view_out="$(gh release view "$VERSION" --json isDraft,url \
+            --jq '"draft=\(.isDraft) url=\(.url)"' 2>&1)" || view_ok=$?
+          echo "::notice::探测 ${VERSION}: 退出码=$view_ok 输出=$(emit "${view_out}")"
 
           if (( view_ok == 0 )); then
             # 重跑：附件覆盖，不影响已存在的 tag。
@@ -160,9 +169,7 @@ jobs:
             gh_run gh release upload "$VERSION" "${files[@]}" --clobber
 
             # changelog 重新生成。注意 gh release edit **不认 --generate-notes**
-            # （那是 create 的旗标），得自己调 API 生成再写回去。这条分支只有在
-            # 该版本已经发布过一次、再跑一次时才会走到 —— 正因如此，这个缺陷一直
-            # 藏着，直到 v0.0.1 重发才暴露出来。
+            # （那是 create 的旗标），得自己调 API 生成再写回去。
             #
             # 刷新 changelog 属于润色，失败不该让刚上传好的附件白费，因此只告警。
             notes_file="$(mktemp)"
@@ -183,15 +190,34 @@ jobs:
             gh_run gh release create "${create_args[@]}" "${files[@]}"
           fi
 
+          # 显式发布一次。草稿可能来自上一次跑残留下来的，也可能有人在网页上存了草稿
+          # 再打 tag —— 两种情况上面都只会走更新分支，草稿状态一直没人动，于是发版
+          # 永远"成功"而外面永远看不到。--draft=false 对已发布的 release 是幂等的，
+          # 所以无条件执行，不留分支。
+          gh_run gh release edit "$VERSION" --draft=false
+          [[ "$PRERELEASE" == "true" ]] && gh_run gh release edit "$VERSION" --prerelease
+
           # 事后复核。gh 有可能什么都没做成却退出 0（权限不足、仓库功能受限等），
-          # 那样这盏绿灯是假的 —— v0.0.1 就这么"成功"过一次，实际一个 release 都
-          # 没生成，直到去 Releases 页面才发现。用 API 确认一次，把这种情况变成
-          # 明确的失败。
-          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}" >/dev/null 2>&1; then
-            echo "::error::${VERSION} 的 Release 不存在或不可读；gh 报了成功但实际没发布"
+          # 那样这盏绿灯是假的 —— v0.0.1 就这么"成功"过好几次，实际 Releases 页面上
+          # 一个都没有。所以用 API 确认一次，把这种情况变成明确的失败。
+          #
+          # 特意查 REST 而不是 gh release view：前者看不见草稿，正好是要的口径 ——
+          # 「发版成功」的标准是外面的人能看见，不是 gh 自己看得见。
+          check_ok=0
+          check_out="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}" \
+            --jq '"draft=\(.draft) assets=\(.assets | length)"' 2>&1)" || check_ok=$?
+          if (( check_ok != 0 )); then
+            echo "::error::${VERSION} 的 Release 对外不可见；gh 报了成功但实际没发布"
+            echo "::error::复核输出: $(emit "${check_out}")"
             echo "  检查仓库是否启用了 Releases，以及 job 是否有 contents: write" >&2
             exit 1
           fi
+          if [[ "$check_out" != "draft=false assets=${#files[@]}" ]]; then
+            echo "::error::${VERSION} 的 Release 状态不对: 期望 draft=false assets=${#files[@]}，实际 ${check_out}"
+            echo "  仍是草稿时对外不可见；附件数不符时多半是历史遗留的陈旧附件，去 Releases 页面删掉多余的那个再重跑" >&2
+            exit 1
+          fi
+          echo "::notice::复核通过: ${check_out}"
 
           {
             echo "### 已发布 $VERSION"
