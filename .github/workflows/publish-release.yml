@@ -132,10 +132,27 @@ jobs:
           fi
 
           if gh release view "$VERSION" >/dev/null 2>&1; then
-            # 重跑：附件覆盖、notes 重新生成，不影响已存在的 tag。
-            echo "Release $VERSION 已存在，更新附件与 changelog"
+            # 重跑：附件覆盖，不影响已存在的 tag。
+            echo "Release $VERSION 已存在，更新附件"
             gh release upload "$VERSION" "${files[@]}" --clobber
-            gh release edit "$VERSION" "${notes_args[@]}"
+
+            # changelog 重新生成。注意 gh release edit **不认 --generate-notes**
+            # （那是 create 的旗标），得自己调 API 生成再写回去。这条分支只有在
+            # 该版本已经发布过一次、再跑一次时才会走到 —— 正因如此，这个缺陷一直
+            # 藏着，直到 v0.0.1 重发才暴露出来。
+            #
+            # 刷新 changelog 属于润色，失败不该让刚上传好的附件白费，因此只告警。
+            notes_file="$(mktemp)"
+            api_args=(-f "tag_name=${VERSION}")
+            [[ -n "$START_TAG" ]] && api_args+=(-f "previous_tag_name=${START_TAG}")
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+                 "${api_args[@]}" --jq .body >"$notes_file" &&
+               gh release edit "$VERSION" --notes-file "$notes_file"; then
+              echo "changelog 已刷新"
+            else
+              echo "::warning::changelog 未能重新生成，保留原有 notes"
+            fi
+            rm -f "$notes_file"
           else
             create_args=("$VERSION" --title "$VERSION" --verify-tag "${notes_args[@]}")
             [[ "$PRERELEASE" == "true" ]] && create_args+=(--prerelease)
