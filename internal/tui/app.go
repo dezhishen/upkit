@@ -996,15 +996,18 @@ func (m Model) spinnerText() string {
 // enabled 返回条目的启用状态。
 // reloadPlugins 按当前清单重建插件来源。
 //
-// 必须用 Reconfigure 而不是 Load：Load 按构造时捕获的条目工作，看不到刚写进清单的
-// 信任哈希 —— 更新完的插件会拿旧哈希去校验新文件，结果是「更新成功但插件变未信任」。
+// 必须走 Reconfigure（控制层里）而不是 Load：Load 按构造时捕获的条目工作，看不到
+// 刚写进清单的信任哈希 —— 更新完的插件会拿旧哈希去校验新文件，结果是「更新成功但
+// 插件变未信任」。
 func (m *Model) reloadPlugins() error {
-	if m.host == nil || m.afs == nil {
+	// 没有插件宿主时什么都不用做：这是「插件子系统未启用」的常态，不是错误。
+	// （m.host 是过渡字段，等安装流程整体收进控制层后由那边判断。）
+	if m.ctrl == nil || m.host == nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if err := m.host.Reconfigure(ctx, m.afs.Sources); err != nil {
+	if err := m.ctrl.ReloadPlugins(ctx); err != nil {
 		m.appendLog(logEntry{At: time.Now(), Level: "error", Msg: "重载插件来源失败：" + err.Error()})
 		return fmt.Errorf("重载插件来源: %w", err)
 	}

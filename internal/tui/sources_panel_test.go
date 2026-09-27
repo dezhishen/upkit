@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dezhishen/upkit/internal/apps"
+	"github.com/dezhishen/upkit/internal/control"
 	"github.com/dezhishen/upkit/internal/pluginfeed"
 	"github.com/dezhishen/upkit/internal/pluginhost"
 )
@@ -210,25 +211,34 @@ func newTestHost(t *testing.T, dir string, ids ...string) *pluginhost.Manager {
 	return host
 }
 
+// newSourcesTestModel 造一个带插件宿主的模型。
+//
+// 宿主由控制层持有，所以要从这里注入；往 Model 上挂字段的话，来源面板走控制层取
+// 数，看不到那个宿主。
+func newSourcesTestModel(t *testing.T, dir string, ids ...string) Model {
+	t.Helper()
+	host := newTestHost(t, dir, ids...)
+	return newTestModelWith(t, func(o *control.Options) { o.Host = host })
+}
+
 // 手工放进 plugin/ 的插件：清单里没有，但宿主发现了，面板必须列出来。
 //
 // 这是最需要操作的一种状态 —— 未信任、因此没启动。如果连行都不出现，用户就只剩下
 // 「去翻日志」和「去改 YAML」，而面板的空状态恰好在推荐用户手工放置插件。
 func TestSourcesPanelListsDiscoveredSources(t *testing.T) {
-	m := newTestModel(t)
-	m.host = newTestHost(t, t.TempDir(), "corp-index")
+	m := newSourcesTestModel(t, t.TempDir(), "corp-index")
 
 	rows := m.sourceRows()
-	if len(rows) != 1 || rows[0].spec.ID != "corp-index" {
+	if len(rows) != 1 || rows[0].info.ID != "corp-index" {
 		t.Fatalf("插件目录里发现到的来源应当出现在列表里，实际 %d 行: %+v", len(rows), rows)
 	}
-	if rows[0].state != pluginhost.StateUntrusted {
-		t.Fatalf("没记信任的插件应为未信任，实际 %q", rows[0].state)
+	if rows[0].info.State != pluginhost.StateUntrusted {
+		t.Fatalf("没记信任的插件应为未信任，实际 %q", rows[0].info.State)
 	}
-	if rows[0].declared {
+	if rows[0].info.Declared {
 		t.Error("该来源不在清单里，declared 应为 false")
 	}
-	if rows[0].sha == "" {
+	if rows[0].info.SHA256 == "" {
 		t.Error("未信任的来源应当带上宿主算出的 sha256，否则界面无法让人核对")
 	}
 
@@ -243,11 +253,10 @@ func TestSourcesPanelListsDiscoveredSources(t *testing.T) {
 
 // 按 t 信任：弹出确认框（含路径与哈希）→ 写进清单 → 立刻生效。
 func TestTrustSourceWritesManifest(t *testing.T) {
-	m := newTestModel(t)
-	m.host = newTestHost(t, t.TempDir(), "corp-index")
+	m := newSourcesTestModel(t, t.TempDir(), "corp-index")
 	path := filepath.Join(t.TempDir(), "apps.yaml")
 	m.afs.Path = path
-	wantSHA := m.sourceRows()[0].sha
+	wantSHA := m.sourceRows()[0].info.SHA256
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(t, m, key('6'))
@@ -287,15 +296,14 @@ func TestTrustSourceWritesManifest(t *testing.T) {
 	}
 
 	// 生效：信任之后它不再是「未信任」。
-	if got := m.sourceRows()[0].state; got == pluginhost.StateUntrusted {
+	if got := m.sourceRows()[0].info.State; got == pluginhost.StateUntrusted {
 		t.Fatalf("信任之后不应仍是未信任")
 	}
 }
 
 // 清单里没有的来源：启停要提示先信任，而不是静默无反应。
 func TestToggleDiscoveredSourceExplainsTrust(t *testing.T) {
-	m := newTestModel(t)
-	m.host = newTestHost(t, t.TempDir(), "corp-index")
+	m := newSourcesTestModel(t, t.TempDir(), "corp-index")
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(t, m, key('6'))
@@ -324,7 +332,7 @@ func TestSourcesHintFitsPanelWidth(t *testing.T) {
 // 文档让用户把 trust 写进清单，而按 r 若只重建内存里的那份快照，手改的内容永远进
 // 不来，这条路就等于没通。
 func TestReloadSourcesReadsManifestFromDisk(t *testing.T) {
-	m := newTestModel(t)
+	m := newSourcesTestModel(t, t.TempDir())
 	path := filepath.Join(t.TempDir(), "apps.yaml")
 	m.afs.Path = path
 
@@ -335,7 +343,6 @@ func TestReloadSourcesReadsManifestFromDisk(t *testing.T) {
 	if err := seed.Save(); err != nil {
 		t.Fatalf("写清单: %v", err)
 	}
-	m.host = newTestHost(t, t.TempDir())
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(t, m, key('6'))

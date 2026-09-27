@@ -3,15 +3,12 @@ package tui
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
-	upkitplugin "github.com/dezhishen/upkit/pkg/plugin"
-
-	"github.com/dezhishen/upkit/internal/apps"
+	"github.com/dezhishen/upkit/internal/control"
 	"github.com/dezhishen/upkit/internal/pluginfeed"
 	"github.com/dezhishen/upkit/internal/pluginhost"
 )
@@ -20,88 +17,25 @@ import (
 type sourceRow struct {
 	isSubscription bool
 
-	spec    apps.SourceSpec
-	name    string
-	state   pluginhost.State
-	detail  string
-	version string
-	apps    int
-
-	// declared 表示这个来源在清单里有没有条目。宿主会把「插件目录里发现到、但清单里
-	// 没声明」的插件也报出来，它们在被信任之前一直缺一个可落盘的承载。
-	declared bool
-	// sha / exec 是宿主实际算出来的哈希与解析出的路径：未信任状态靠这两个值变成可信。
-	sha  string
-	exec string
+	// info 由控制层汇总：清单里的声明与宿主发现的来源合并后的一行。
+	info control.SourceInfo
 
 	sub pluginfeed.Subscription
 }
 
-// configRow 是插件配置子视图里的一行。
-type configRow struct {
-	Key      string
-	Label    string
-	Value    string
-	Default  string
-	Help     string
-	Required bool
-	Secret   bool
-}
-
 // sourceRows 汇总来源列表：插件来源在前，订阅在后。
 //
-// 「插件来源」不只取清单：宿主还扫描插件目录，能报出清单里没写的手工插件。只列清单的话
-// 这类插件在界面上完全消失，而它恰好是最需要操作的一种状态 —— 未信任所以没启动，
-// 用户却找不到任何入口。
+// 插件来源那一部分的合并（清单里声明的 + 宿主在插件目录里发现到的）在控制层做 ——
+// 只列清单的话，手工放进 plugin/ 的插件在界面上会完全消失，而它恰好是最需要操作的
+// 一种状态（未信任所以没启动）。
 func (m Model) sourceRows() []sourceRow {
-	rows := make([]sourceRow, 0, len(m.afs.Sources)+4)
-
-	live := map[string]pluginhost.SourceStatus{}
-	var discovered []pluginhost.SourceStatus
-	if m.host != nil {
-		for _, st := range m.host.Sources() {
-			live[st.ID] = st
-			discovered = append(discovered, st)
-		}
+	if m.ctrl == nil {
+		return nil
 	}
-
-	declared := map[string]bool{}
-	for _, spec := range m.afs.Sources {
-		declared[spec.ID] = true
-		row := sourceRow{spec: spec, name: spec.Name, declared: true}
-		switch {
-		case !spec.EnabledValue():
-			row.state, row.detail = pluginhost.StateDisabled, "已在清单中停用"
-		default:
-			if st, ok := live[spec.ID]; ok {
-				row.state, row.detail = st.State, st.Detail
-				row.version, row.apps = st.Version, st.Apps
-				row.sha, row.exec = st.SHA256, st.Exec
-				// 清单里的名字优先，否则用插件自报的名字。
-				row.name = firstNonEmptyStr(spec.Name, st.Name)
-			} else {
-				row.state, row.detail = pluginhost.StateDisabled, "宿主未加载"
-			}
-		}
-		rows = append(rows, row)
-	}
-
-	// 宿主发现到、但清单里没声明的来源。宿主的顺序是按 id 排好的，直接沿用。
-	for _, st := range discovered {
-		if declared[st.ID] {
-			continue
-		}
-		rows = append(rows, sourceRow{
-			spec:     apps.SourceSpec{ID: st.ID, Kind: apps.KindPlugin},
-			name:     firstNonEmptyStr(st.Name, st.ID),
-			state:    st.State,
-			detail:   st.Detail,
-			version:  st.Version,
-			apps:     st.Apps,
-			sha:      st.SHA256,
-			exec:     st.Exec,
-			declared: false,
-		})
+	infos := m.ctrl.Sources()
+	rows := make([]sourceRow, 0, len(infos)+4)
+	for _, info := range infos {
+		rows = append(rows, sourceRow{info: info})
 	}
 
 	if m.feed != nil {
@@ -113,44 +47,33 @@ func (m Model) sourceRows() []sourceRow {
 }
 
 // configSource 返回正在编辑配置的那个来源。
-func (m Model) configSource() (apps.SourceSpec, bool) {
-	for _, spec := range m.afs.Sources {
-		if spec.ID == m.cfgFor {
-			return spec, true
+func (m Model) configSource() (control.SourceInfo, bool) {
+	if m.ctrl == nil {
+		return control.SourceInfo{}, false
+	}
+	for _, info := range m.ctrl.Sources() {
+		if info.ID == m.cfgFor {
+			return info, true
 		}
 	}
-	return apps.SourceSpec{}, false
+	return control.SourceInfo{}, false
 }
 
 // configRows 返回插件声明的配置项及其当前值。
-func (m Model) configRows(spec apps.SourceSpec) []configRow {
-	if m.host == nil {
+//
+// 取配置项要走一次插件 RPC，而它跑在渲染/按键路径上是同步的，所以超时给短一点：
+// 一个不应答的插件不应该把界面卡住。
+func (m Model) configRows(id string) []control.PluginField {
+	if m.ctrl == nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	schema, err := m.host.ConfigSchema(ctx, spec.ID)
+	fields, err := m.ctrl.PluginConfig(ctx, id)
 	if err != nil {
 		return nil
 	}
-	out := make([]configRow, 0, len(schema.Fields))
-	for _, f := range schema.Fields {
-		row := configRow{
-			Key:      f.Key,
-			Label:    firstNonEmptyStr(f.Label, f.Key),
-			Default:  f.Default,
-			Help:     f.Help,
-			Required: f.Required,
-			Secret:   f.Secret,
-		}
-		if v, ok := spec.Config[f.Key]; ok {
-			row.Value = v
-		} else {
-			row.Value = f.Default
-		}
-		out = append(out, row)
-	}
-	return out
+	return fields
 }
 
 // ── 渲染 ──────────────────────────────────────────────────────
@@ -212,13 +135,13 @@ func (m Model) sourceLine(i int, r sourceRow) string {
 			m.theme.Primary().Render(r.sub.URL), style.Render(state))
 	}
 
-	name := r.name
+	name := r.info.Name
 	if name == "" {
-		name = r.spec.ID
+		name = r.info.ID
 	}
 	detail := m.stateText(r)
-	return fmt.Sprintf("%s%s %s  %s  %s", cur, m.sourceMarker(r.state),
-		m.theme.Primary().Render(name), m.theme.Dim().Render(orDash(r.version)), detail)
+	return fmt.Sprintf("%s%s %s  %s  %s", cur, m.sourceMarker(r.info.State),
+		m.theme.Primary().Render(name), m.theme.Dim().Render(orDash(r.info.Version)), detail)
 }
 
 func (m Model) sourceMarker(st pluginhost.State) string {
@@ -237,37 +160,37 @@ func (m Model) sourceMarker(st pluginhost.State) string {
 }
 
 func (m Model) stateText(r sourceRow) string {
-	switch r.state {
+	switch r.info.State {
 	case pluginhost.StateOK:
-		return m.theme.OK().Render(fmt.Sprintf("正常 · %d 个软件", r.apps))
+		return m.theme.OK().Render(fmt.Sprintf("正常 · %d 个软件", r.info.Apps))
 	case pluginhost.StateUntrusted:
 		return m.theme.Warn().Render("未信任 · 按 t 信任")
 	case pluginhost.StateMissing:
 		return m.theme.Warn().Render("缺少文件")
 	case pluginhost.StateError:
-		return m.theme.Err().Render("错误：" + firstNonEmptyStr(r.detail, "启动失败"))
+		return m.theme.Err().Render("错误：" + firstNonEmptyStr(r.info.Detail, "启动失败"))
 	default:
-		return m.theme.Dim().Render(firstNonEmptyStr(r.detail, "未启用"))
+		return m.theme.Dim().Render(firstNonEmptyStr(r.info.Detail, "未启用"))
 	}
 }
 
 // viewPluginConfig 渲染某个插件的配置项（入口就在插件条目上）。
 func (m Model) viewPluginConfig(w, height int) string {
-	spec, ok := m.configSource()
+	info, ok := m.configSource()
 	if !ok {
 		m.cfgFor = ""
 		return m.theme.Frame("插件配置", "该来源已不存在。", w, height, true)
 	}
-	rows := m.configRows(spec)
+	rows := m.configRows(info.ID)
 	if len(rows) == 0 {
 		return m.theme.Frame("插件配置",
-			fmt.Sprintf("%s 没有声明可配置项。\n\n插件可以用 ConfigSchema 声明配置字段，界面会据此生成表单。\n\n按 esc 返回。", spec.ID),
+			fmt.Sprintf("%s 没有声明可配置项。\n\n插件可以用 ConfigSchema 声明配置字段，界面会据此生成表单。\n\n按 esc 返回。", info.ID),
 			w, height, true)
 	}
 
 	var b strings.Builder
 	b.WriteString(m.theme.Dim().Render("插件："))
-	b.WriteString(m.theme.Primary().Render(spec.ID))
+	b.WriteString(m.theme.Primary().Render(info.ID))
 	b.WriteString("\n\n")
 
 	for i, r := range rows {
@@ -328,7 +251,7 @@ func (m Model) updateSources(key string) (tea.Model, tea.Cmd) {
 			m.feedErr = nil
 			return m, m.loadFeedCmd(m.feedFor)
 		}
-		m.cfgFor = rows[m.srcCursor].spec.ID
+		m.cfgFor = rows[m.srcCursor].info.ID
 		m.cfgCursor = 0
 	case "a":
 		return m.addSubscription()
@@ -353,12 +276,12 @@ func (m Model) updateSources(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updatePluginConfig(key string) (tea.Model, tea.Cmd) {
-	spec, ok := m.configSource()
+	info, ok := m.configSource()
 	if !ok {
 		m.cfgFor = ""
 		return m, nil
 	}
-	rows := m.configRows(spec)
+	rows := m.configRows(info.ID)
 	switch key {
 	case "esc", "q", "h", "left", "backspace":
 		m.cfgFor = ""
@@ -373,11 +296,11 @@ func (m Model) updatePluginConfig(key string) (tea.Model, tea.Cmd) {
 		m.cfgCursor = len(rows) - 1
 	case "enter", "l":
 		if m.cfgCursor >= 0 && m.cfgCursor < len(rows) {
-			return m.editConfigField(spec, rows[m.cfgCursor])
+			return m.editConfigField(info, rows[m.cfgCursor])
 		}
 	case "D":
 		if m.cfgCursor >= 0 && m.cfgCursor < len(rows) {
-			return m.resetConfigField(spec, rows[m.cfgCursor])
+			return m.resetConfigField(info, rows[m.cfgCursor])
 		}
 	}
 	if m.cfgCursor < 0 {
@@ -389,8 +312,8 @@ func (m Model) updatePluginConfig(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) editConfigField(spec apps.SourceSpec, row configRow) (tea.Model, tea.Cmd) {
-	id, key, required := spec.ID, row.Key, row.Required
+func (m Model) editConfigField(info control.SourceInfo, row control.PluginField) (tea.Model, tea.Cmd) {
+	id, key, required := info.ID, row.Key, row.Required
 	label := row.Label
 	if row.Help != "" {
 		label = row.Help
@@ -408,8 +331,8 @@ func (m Model) editConfigField(spec apps.SourceSpec, row configRow) (tea.Model, 
 }
 
 // resetConfigField 清掉该项的显式值，回落到插件声明的默认值。
-func (m Model) resetConfigField(spec apps.SourceSpec, row configRow) (tea.Model, tea.Cmd) {
-	if err := m.applySourceConfig(spec.ID, row.Key, ""); err != nil {
+func (m Model) resetConfigField(info control.SourceInfo, row control.PluginField) (tea.Model, tea.Cmd) {
+	if err := m.applySourceConfig(info.ID, row.Key, ""); err != nil {
 		m.setStatusErr(err)
 	} else {
 		m.status = "已清除 " + row.Label + "，回到默认值"
@@ -417,36 +340,14 @@ func (m Model) resetConfigField(spec apps.SourceSpec, row configRow) (tea.Model,
 	return m, nil
 }
 
-// applySourceConfig 把某一项配置写回清单并热应用给插件。
-//
-// 写盘与热应用分开处理：写盘失败必须报错；插件拒绝只提示（清单已改，重载后仍会生效）。
+// applySourceConfig 把某一项配置写回清单并热应用给插件（两件事都在控制层做）。
 func (m *Model) applySourceConfig(id, key, value string) error {
-	for i := range m.afs.Sources {
-		if m.afs.Sources[i].ID != id {
-			continue
-		}
-		if m.afs.Sources[i].Config == nil {
-			m.afs.Sources[i].Config = map[string]string{}
-		}
-		if value == "" {
-			delete(m.afs.Sources[i].Config, key)
-		} else {
-			m.afs.Sources[i].Config[key] = value
-		}
-		if err := m.afs.Save(); err != nil {
-			return fmt.Errorf("保存清单: %w", err)
-		}
-		m.setDirty = true
-		if m.host != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := m.host.Configure(ctx, id, upkitplugin.NewConfig(m.afs.Sources[i].Config)); err != nil {
-				return fmt.Errorf("插件未接受该配置: %w", err)
-			}
-		}
-		return nil
+	if m.ctrl == nil {
+		return fmt.Errorf("控制层未初始化")
 	}
-	return fmt.Errorf("来源 %s 已不存在", id)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return m.ctrl.SetPluginConfig(ctx, id, key, value)
 }
 
 // writeSourceConfig 是弹窗回调用的版本：把结果转成界面提示。
@@ -604,37 +505,24 @@ func (m Model) toggleSource(rows []sourceRow) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if !row.declared {
-		m.setStatus(row.spec.ID + " 还没写进清单；按 t 信任后会自动补一条，之后再改启停")
+	if !row.info.Declared {
+		m.setStatus(row.info.ID + " 还没写进清单；按 t 信任后会自动补一条，之后再改启停")
 		return m, nil
 	}
 
-	// 插件来源：改清单里的 enabled 并落盘。
-	for i := range m.afs.Sources {
-		if m.afs.Sources[i].ID != row.spec.ID {
-			continue
-		}
-		next := !m.afs.Sources[i].EnabledValue()
-		m.afs.Sources[i].Enabled = &next
-		if err := m.afs.Save(); err != nil {
-			m.setStatusErr(fmt.Errorf("保存清单: %w", err))
-			return m, nil
-		}
-		// 立刻生效：宿主持有的是构造时的 entry 副本，不重建就只是改了文件而没改行为。
-		if m.host != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			if err := m.host.Reconfigure(ctx, m.afs.Sources); err != nil {
-				m.setStatusErr(err)
-				return m, nil
-			}
-		}
-		if next {
-			m.status = "已启用该来源"
-		} else {
-			m.status = "已停用该来源"
-		}
+	// 插件来源：改清单里的 enabled，落盘并立刻生效 —— 宿主持有的是构造时的条目
+	// 副本，不重建就只是改了文件而没改行为。
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	next := !row.info.Enabled
+	if err := m.ctrl.SetSourceEnabled(ctx, row.info.ID, next); err != nil {
+		m.setStatusErr(err)
 		return m, nil
+	}
+	if next {
+		m.status = "已启用该来源"
+	} else {
+		m.status = "已停用该来源"
 	}
 	return m, nil
 }
@@ -654,18 +542,18 @@ func (m Model) trustSource(rows []sourceRow) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	id := row.spec.ID
-	name := firstNonEmptyStr(row.name, id)
-	if row.state == pluginhost.StateOK {
+	id := row.info.ID
+	name := firstNonEmptyStr(row.info.Name, id)
+	if row.info.State == pluginhost.StateOK {
 		m.setStatus(name + " 已经是可信的")
 		return m, nil
 	}
-	if row.sha == "" {
+	if row.info.SHA256 == "" {
 		m.setStatusErr(fmt.Errorf("宿主还没算出 %s 的哈希，先按 r 重载一次", id))
 		return m, nil
 	}
 
-	sha, exec := row.sha, orDash(row.exec)
+	sha, exec := row.info.SHA256, orDash(row.info.Exec)
 	m.confirm = &confirmBox{
 		Title: "信任插件来源",
 		Message: fmt.Sprintf("信任之后 %s 会在本机运行 —— 插件等于任意代码执行。\n\n"+
@@ -677,56 +565,31 @@ func (m Model) trustSource(rows []sourceRow) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// applySourceTrust 把信任哈希写进清单并立刻重载，省掉用户再按一次 r。
+// applySourceTrust 记录信任并让宿主按新清单重载，省掉用户再按一次 r。
 func (m *Model) applySourceTrust(id, sha, name string) tea.Cmd {
-	if m.afs == nil {
-		m.setStatusErr(fmt.Errorf("清单未加载，无法记录信任"))
+	if m.ctrl == nil {
+		m.setStatusErr(fmt.Errorf("控制层未初始化"))
 		return nil
 	}
-	m.afs.SetSourceTrust(id, sha)
-	if err := m.afs.Save(); err != nil {
-		// 内存里已经改了，但没落盘：下次启动会退回未信任，所以这里必须报错。
-		m.setStatusErr(fmt.Errorf("保存清单: %w", err))
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := m.ctrl.TrustSource(ctx, id, sha); err != nil {
+		m.setStatusErr(err)
 		return nil
-	}
-	if m.host != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-		if err := m.host.Reconfigure(ctx, m.afs.Sources); err != nil {
-			m.setStatusErr(fmt.Errorf("重载插件来源: %w", err))
-			return nil
-		}
 	}
 	m.status = "已信任 " + name + "，正在加载"
 	return nil
 }
 
 func (m Model) reloadSources() (tea.Model, tea.Cmd) {
-	if m.host == nil {
-		m.setStatusErr(fmt.Errorf("插件宿主未启用"))
+	if m.ctrl == nil {
+		m.setStatusErr(fmt.Errorf("控制层未初始化"))
 		return m, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-
-	// 先把磁盘上的来源读回来：文档让用户手改 apps.yaml 写 trust，若只重建内存里的
-	// 那份快照，手改的内容永远进不来，按 r 就等于没按。
-	//
-	// 只采纳 Sources：清单里的 Apps 归「概览」页管，整份替掉会让那边已加载的列表
-	// 与界面上的内容对不上。文件不存在时保持内存里的内容（Load1 遇到不存在的文件会
-	// 返回空清单，直接采纳会把刚加进来的来源抹掉）。
-	if m.afs != nil && m.afs.Path != "" {
-		if _, err := os.Stat(m.afs.Path); err == nil {
-			fresh, err := apps.Load(m.afs.Path)
-			if err != nil {
-				m.setStatusErr(fmt.Errorf("重读清单: %w", err))
-				return m, nil
-			}
-			m.afs.Sources = fresh.Sources
-		}
-	}
-
-	if err := m.host.Reconfigure(ctx, m.afs.Sources); err != nil {
+	// 重读磁盘上的清单再重建来源，这样「手改 apps.yaml 写 trust」那条路才走得通。
+	if err := m.ctrl.ReloadSources(ctx); err != nil {
 		m.setStatusErr(err)
 		return m, nil
 	}
