@@ -76,6 +76,22 @@ jobs:
         run: |
           set -euo pipefail
 
+          # job 日志需要仓库管理员权限才能读，而 ::notice:: / ::error:: 注解是公开的。
+          # 所以关键状态与命令输出都往注解上抛一份，出问题时不必登录就能定位 ——
+          # v0.0.1 排查时因为没有这条通道，连着两次只能靠猜。
+          emit() { printf '%s' "$1" | head -c 2000; }
+          gh_run() {
+            local out
+            if ! out="$("$@" 2>&1)"; then
+              echo "::error::命令失败: $*"
+              echo "::error::输出: $(emit "$out")"
+              return 1
+            fi
+            echo "::notice::$* → $(emit "$out")"
+          }
+
+          echo "::notice::VERSION=[${VERSION}] PRERELEASE=[${PRERELEASE}] START_TAG=[${START_TAG:-}] DRY_RUN=[${DRY_RUN}]"
+
           # 前置条件单独报错，比 gh 自己抛 "not a git repository" 好定位。
           if ! git rev-parse --git-dir >/dev/null 2>&1; then
             echo "::error::工作目录不是 git 仓库，gh --generate-notes 无法解析 changelog 范围；本 job 缺少 actions/checkout"
@@ -89,6 +105,7 @@ jobs:
             dist/upkit-windows-arm64.exe
             dist/sha256sums.txt
           )
+          echo "::notice::将发布 ${#files[@]} 个文件，git 仓库=$PWD"
 
           # 逐个确认存在，缺失时给出比 gh 更明确的报错。
           missing=0
@@ -131,10 +148,16 @@ jobs:
             exit 0
           fi
 
-          if gh release view "$VERSION" >/dev/null 2>&1; then
+          # gh release view 在这里是「探测」而不是「命令」，失败是预期内的，
+          # 但失败原因仍要看一眼 —— 鉴权问题会伪装成「release 不存在」。
+          view_ok=0
+          view_out="$(gh release view "$VERSION" 2>&1)" || view_ok=$?
+          echo "::notice::gh release view 退出码=$view_ok 输出=$(emit "${view_out}")"
+
+          if (( view_ok == 0 )); then
             # 重跑：附件覆盖，不影响已存在的 tag。
             echo "Release $VERSION 已存在，更新附件"
-            gh release upload "$VERSION" "${files[@]}" --clobber
+            gh_run gh release upload "$VERSION" "${files[@]}" --clobber
 
             # changelog 重新生成。注意 gh release edit **不认 --generate-notes**
             # （那是 create 的旗标），得自己调 API 生成再写回去。这条分支只有在
@@ -156,7 +179,8 @@ jobs:
           else
             create_args=("$VERSION" --title "$VERSION" --verify-tag "${notes_args[@]}")
             [[ "$PRERELEASE" == "true" ]] && create_args+=(--prerelease)
-            gh release create "${create_args[@]}" "${files[@]}"
+            echo "::notice::走创建分支: gh release create ${create_args[*]}"
+            gh_run gh release create "${create_args[@]}" "${files[@]}"
           fi
 
           # 事后复核。gh 有可能什么都没做成却退出 0（权限不足、仓库功能受限等），
