@@ -200,7 +200,7 @@ func (m Model) viewOverview(w, height int) string {
 // 说明列优先展示错误：检查失败比「有新版本」更值得占用这一列。
 func (m Model) overviewRow(i int, a *engine.App, nameMax, noteMax int) []string {
 	name := a.Ref.DisplayName()
-	if !appEnabled(a, m.afs) {
+	if !appEnabled(a, m.ctrl) {
 		name += "（停用）"
 	}
 	note := a.Note
@@ -239,7 +239,7 @@ func (m Model) overviewStyle(row, col int) lipgloss.Style {
 		return m.tableCell(m.theme.SelectedRow())
 	}
 	a := m.apps[row]
-	if !appEnabled(a, m.afs) || a.Shadowed {
+	if !appEnabled(a, m.ctrl) || a.Shadowed {
 		return m.tableCell(m.theme.Dim())
 	}
 	switch {
@@ -292,7 +292,7 @@ func (m Model) viewDetail(w, height int) string {
 
 	line("名称", a.Ref.DisplayName())
 	line("标识", a.Ref.ID)
-	line("启用", yesNo(appEnabled(a, m.afs)))
+	line("启用", yesNo(appEnabled(a, m.ctrl)))
 	line("安装方式", a.Ref.Method)
 	line("来源", a.Ref.Source)
 	line("解包", a.Ref.Unpack)

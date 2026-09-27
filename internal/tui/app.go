@@ -15,10 +15,10 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/dezhishen/upkit/internal/apps"
+	"github.com/dezhishen/upkit/internal/control"
 	"github.com/dezhishen/upkit/internal/core"
 	"github.com/dezhishen/upkit/internal/engine"
 	"github.com/dezhishen/upkit/internal/logging"
-	"github.com/dezhishen/upkit/internal/manifest"
 	"github.com/dezhishen/upkit/internal/pluginfeed"
 	"github.com/dezhishen/upkit/internal/pluginhost"
 	"github.com/dezhishen/upkit/internal/settings"
@@ -40,22 +40,20 @@ const (
 var tabTitles = []string{"概览", "详情", "任务", "日志", "设置", "来源"}
 
 // Options 构造 TUI。
+//
+// 这里只有展示项与控制层：界面不再直接拿领域服务（引擎、清单、插件宿主、订阅
+// 仓库、日志管理器），那些都由 control.Controller 持有，多步流程也只在那里
+// 有一份。
 type Options struct {
-	Engine   *engine.Engine
-	Settings *settings.Settings
-	Apps     *apps.File
-	Logger   *logging.Manager
-	Sink     *sink
-	Version  string
-	NoColor  bool
-	ASCII    bool
-	Borders  string // unicode | square | ascii
+	// Ctrl 是控制层。
+	Ctrl *control.Controller
+
+	Version string
+	NoColor bool
+	ASCII   bool
+	Borders string // unicode | square | ascii
 	// ConfigPath 是 settings.yaml 的实际路径（界面上展示）。
 	ConfigPath string
-	// Host 是插件宿主（可为 nil：插件子系统未启用）。
-	Host *pluginhost.Manager
-	// Feed 是订阅与授权记录（可为 nil：订阅不可用）。
-	Feed *pluginfeed.Store
 }
 
 // jobItem 是任务面板的一项。
@@ -134,11 +132,14 @@ func plainTextInputStyles() textinput.Styles {
 type Model struct {
 	opts  Options
 	theme Theme
-	eng   *engine.Engine
-	set   *settings.Settings
-	afs   *apps.File
-	log   *logging.Manager
-	sink  *sink
+
+	// ctrl 是控制层。界面自己不持有引擎、也不建事件通道：那两件事都在这里。
+	ctrl *control.Controller
+
+	// 下面几个是迁移期间的过渡字段（New 从控制层取出），对应子系统收完就删。
+	set *settings.Settings
+	afs *apps.File
+	log *logging.Manager
 
 	width, height int
 	tab           tabID
@@ -197,14 +198,8 @@ type Model struct {
 func New(opts Options) Model {
 	m := Model{
 		opts:      opts,
-		host:      opts.Host,
-		feed:      opts.Feed,
+		ctrl:      opts.Ctrl,
 		theme:     NewTheme(opts.ASCII, opts.NoColor, opts.Borders),
-		eng:       opts.Engine,
-		set:       opts.Settings,
-		afs:       opts.Apps,
-		log:       opts.Logger,
-		sink:      opts.Sink,
 		logLevel:  "info",
 		logFollow: true,
 		status:    "按 ? 查看快捷键，c 检查更新",
@@ -212,6 +207,11 @@ func New(opts Options) Model {
 		spin:      newSpinner(opts.ASCII),
 		keys:      newKeyMap(),
 		helpView:  newHelpModel(opts.NoColor),
+	}
+	// 过渡期：下面几个服务尚未全部收进控制层，先从它那里取一份。
+	if c := opts.Ctrl; c != nil {
+		m.set, m.afs, m.log = c.Settings(), c.Manifest(), c.Logger()
+		m.host, m.feed = c.Host(), c.Feed()
 	}
 	if m.log != nil {
 		for _, r := range m.log.Ring().Snapshot() {
@@ -281,7 +281,7 @@ func newHelpModel(noColor bool) help.Model {
 
 // Init 启动时先做一次全量检查。
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.sink.waitEvent(), m.checkCmd(nil), m.spin.Tick)
+	return tea.Batch(m.waitEvent(), m.checkCmd(nil), m.spin.Tick)
 }
 
 // Update 处理消息。
@@ -294,7 +294,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case eventMsg:
 		m.handleEvent(core.Event(msg))
-		return m, m.sink.waitEvent()
+		return m, m.waitEvent()
 
 	case feedLoadedMsg:
 		// feedFor 为空 = 用户已经离开订阅详情页。此时若还拿空地址去重拉，
@@ -487,7 +487,7 @@ func (m *Model) jobFor(id string) *jobItem {
 		}
 	}
 	name := id
-	if a := m.eng.Find(id); a != nil {
+	if a := m.ctrl.Find(id); a != nil {
 		name = a.Ref.DisplayName()
 	}
 	j := &jobItem{AppID: id, Name: name, State: "排队", Start: time.Now()}
@@ -567,20 +567,12 @@ func (m Model) ctx() (context.Context, context.CancelFunc) {
 }
 
 func (m Model) checkCmd(ids []string) tea.Cmd {
-	eng := m.eng
+	ctrl := m.ctrl
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		if len(ids) == 0 {
-			list, err := eng.Check(ctx)
-			return appsMsg{apps: list, err: err}
-		}
-		for _, id := range ids {
-			if _, err := eng.CheckOne(ctx, id); err != nil {
-				return appsMsg{err: err}
-			}
-		}
-		return appsMsg{apps: eng.Apps()}
+		list, err := ctrl.Check(ctx, ids)
+		return appsMsg{apps: list, err: err}
 	}
 }
 
@@ -588,31 +580,30 @@ func (m Model) applyCmd(ids []string) tea.Cmd {
 	if len(ids) == 0 {
 		return nil
 	}
-	eng := m.eng
-	conc := m.set.Engine.ApplyConcurrency
+	ctrl := m.ctrl
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 		defer cancel()
-		return appliedMsg{results: eng.ApplyMany(ctx, ids, conc)}
+		return appliedMsg{results: ctrl.Apply(ctx, ids)}
 	}
 }
 
 func (m Model) planCmd(id string) tea.Cmd {
-	eng := m.eng
+	ctrl := m.ctrl
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		p, err := eng.Plan(ctx, id)
+		p, err := ctrl.Plan(ctx, id)
 		return planMsg{plan: p, err: err}
 	}
 }
 
 func (m Model) uninstallCmd(id string, keep bool) tea.Cmd {
-	eng := m.eng
+	ctrl := m.ctrl
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		if err := eng.Uninstall(ctx, id, keep); err != nil {
+		if err := ctrl.Uninstall(ctx, id, keep); err != nil {
 			return noticeMsg{err: err}
 		}
 		return noticeMsg{text: "已卸载 " + id}
@@ -620,11 +611,11 @@ func (m Model) uninstallCmd(id string, keep bool) tea.Cmd {
 }
 
 func (m Model) rollbackCmd(id string) tea.Cmd {
-	eng := m.eng
+	ctrl := m.ctrl
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		if err := eng.Rollback(ctx, id, ""); err != nil {
+		if err := ctrl.Rollback(ctx, id); err != nil {
 			return noticeMsg{err: err}
 		}
 		return noticeMsg{text: "已回滚 " + id}
@@ -632,15 +623,9 @@ func (m Model) rollbackCmd(id string) tea.Cmd {
 }
 
 func (m Model) exportCmd() tea.Cmd {
-	eng, afs, set := m.eng, m.afs, m.set
+	ctrl := m.ctrl
 	return func() tea.Msg {
-		installed := map[string]string{}
-		for _, a := range eng.Apps() {
-			if a.Status.Version != "" {
-				installed[a.Ref.ID] = a.Status.Version
-			}
-		}
-		path, err := manifest.Export("", set, afs, installed)
+		path, err := ctrl.ExportManifest()
 		if err != nil {
 			return noticeMsg{err: err}
 		}
@@ -649,17 +634,12 @@ func (m Model) exportCmd() tea.Cmd {
 }
 
 func (m Model) importCmd(path string) tea.Cmd {
-	eng, afs := m.eng, m.afs
+	ctrl := m.ctrl
 	return func() tea.Msg {
-		f, err := manifest.Load(path)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		added, updated, err := ctrl.ImportManifest(ctx, path)
 		if err != nil {
-			return noticeMsg{err: err}
-		}
-		added, updated := f.MergeApps(afs)
-		if err := afs.Save(); err != nil {
-			return noticeMsg{err: err}
-		}
-		if _, err := eng.List(context.Background()); err != nil {
 			return noticeMsg{err: err}
 		}
 		return noticeMsg{text: fmt.Sprintf("已导入：新增 %d 个，更新 %d 个", len(added), len(updated))}
@@ -788,11 +768,8 @@ func (m Model) updateOverview(key string) (tea.Model, tea.Cmd) {
 		if a == nil {
 			return m, nil
 		}
-		if err := m.afs.SetEnabled(a.Ref.ID, !appEnabled(a, m.afs)); err != nil {
-			m.setStatusErr(err)
-			return m, nil
-		}
-		if err := m.afs.Save(); err != nil {
+		// SetAppEnabled 自己会落盘（状态写在来源声明上），这里不用再存一次。
+		if err := m.ctrl.SetAppEnabled(a.Ref.ID, !appEnabled(a, m.ctrl)); err != nil {
 			m.setStatusErr(err)
 			return m, nil
 		}
@@ -1034,11 +1011,12 @@ func (m *Model) reloadPlugins() error {
 	return nil
 }
 
-func appEnabled(a *engine.App, afs *apps.File) bool {
-	if a == nil || afs == nil {
+// appEnabled 报告某个软件是否启用（清单里没有该条目时视为启用）。
+func appEnabled(a *engine.App, ctrl *control.Controller) bool {
+	if a == nil || ctrl == nil {
 		return true
 	}
-	return afs.Enabled(a.Ref.ID)
+	return ctrl.AppEnabled(a.Ref.ID)
 }
 
 // Version 返回界面版本号。

@@ -25,12 +25,11 @@ import (
 	"github.com/mattn/go-isatty"
 
 	"github.com/dezhishen/upkit/internal/apps"
+	"github.com/dezhishen/upkit/internal/control"
 	"github.com/dezhishen/upkit/internal/core"
-	"github.com/dezhishen/upkit/internal/engine"
 	"github.com/dezhishen/upkit/internal/logging"
 	"github.com/dezhishen/upkit/internal/pluginfeed"
 	"github.com/dezhishen/upkit/internal/pluginhost"
-	"github.com/dezhishen/upkit/internal/registry/all"
 	"github.com/dezhishen/upkit/internal/settings"
 	"github.com/dezhishen/upkit/internal/tui"
 	"github.com/dezhishen/upkit/internal/util"
@@ -198,34 +197,26 @@ func run(opts optionSet) error {
 		return err
 	}
 
-	// 事件通道 + 引擎
-	evSink, sink := tui.NewSink(1024)
-	eng, err := engine.New(engine.Options{
+	// 控制层：它持有全部领域服务与运行期状态，界面只跟它打交道。引擎也在这里面
+	// 构造 —— 引擎要的事件接收器就是控制层的 Events()，两头各自接线容易接错。
+	ctrl, err := control.New(control.Options{
 		Settings: set,
 		Apps:     afs,
-		Registry: all.Registry(),
-		Log:      mgr,
-		Sink:     sink,
-		Audit:    mgr.Audit,
-		Plugins:  host,
+		Logger:   mgr,
+		Host:     host,
+		Feed:     subStore,
 	})
 	if err != nil {
 		return err
 	}
 
 	model := tui.New(tui.Options{
-		Engine:     eng,
-		Settings:   set,
-		Apps:       afs,
-		Logger:     mgr,
-		Sink:       evSink,
+		Ctrl:       ctrl,
 		Version:    version, // 短版本号：界面标题已含工具名
 		NoColor:    opts.noColor,
 		ASCII:      opts.ascii,
 		Borders:    set.UI.Borders,
 		ConfigPath: set.Path,
-		Host:       host,
-		Feed:       subStore,
 	})
 	// bubbletea v2 起，终端特性（备用屏幕、鼠标模式、窗口标题）改由 View 的字段声明，
 	// 不再是 NewProgram 的选项。备用屏幕在 Model.View 内设置。

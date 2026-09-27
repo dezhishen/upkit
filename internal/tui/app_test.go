@@ -11,14 +11,23 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/dezhishen/upkit/internal/apps"
+	"github.com/dezhishen/upkit/internal/control"
 	"github.com/dezhishen/upkit/internal/core"
 	"github.com/dezhishen/upkit/internal/engine"
 	"github.com/dezhishen/upkit/internal/logging"
-	"github.com/dezhishen/upkit/internal/registry/all"
 	"github.com/dezhishen/upkit/internal/settings"
 )
 
 func newTestModel(t *testing.T) Model {
+	t.Helper()
+	return newTestModelWith(t, nil)
+}
+
+// newTestModelWith 在默认装配之上再改一改控制层选项。
+//
+// 插件宿主与订阅仓库由控制层持有，测试要注入它们得从这里走，而不是往 Model 上
+// 挂字段 —— 挂上去的话，界面用的是测试塞的那份，控制层用的是另一份，两边就岔了。
+func newTestModelWith(t *testing.T, tweak func(*control.Options)) Model {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -44,23 +53,17 @@ func newTestModel(t *testing.T) Model {
 		Install: apps.InstallSpec{Path: filepath.Join(dir, "demo"), Entrypoints: []string{"demo.exe"}},
 	}}
 
-	eng, err := engine.New(engine.Options{
-		Settings: set,
-		Apps:     afs,
-		Registry: all.Registry(),
-		Log:      mgr,
-	})
+	opts := control.Options{Settings: set, Apps: afs, Logger: mgr, EventBuffer: 32}
+	if tweak != nil {
+		tweak(&opts)
+	}
+	ctrl, err := control.New(opts)
 	if err != nil {
-		t.Fatalf("engine.New: %v", err)
+		t.Fatalf("control.New: %v", err)
 	}
 
-	evSink, _ := NewSink(32)
 	return New(Options{
-		Engine:     eng,
-		Settings:   set,
-		Apps:       afs,
-		Logger:     mgr,
-		Sink:       evSink,
+		Ctrl:       ctrl,
 		Version:    "test",
 		ConfigPath: set.Path,
 	})
