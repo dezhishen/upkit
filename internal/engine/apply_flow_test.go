@@ -146,6 +146,35 @@ func (m *fakeMethod) Backups(context.Context, core.Request) ([]core.Backup, erro
 	return m.backups, nil
 }
 
+// syncRecorder 是并发安全的收集器。
+//
+// 引擎在批量执行时会并发地发事件、写审计，普通切片在这里真的会丢东西 ——
+// race 检测器会抓住它，而且抓得对：真实运行时同样是并发的（CI 的 -race 就是
+// 这么抓到的）。
+type syncRecorder[T any] struct {
+	mu   sync.Mutex
+	vals []T
+}
+
+func (r *syncRecorder[T]) add(v T) {
+	r.mu.Lock()
+	r.vals = append(r.vals, v)
+	r.mu.Unlock()
+}
+
+// list 返回一份快照：调用方拿到的是自己的副本，之后怎么用都不会再碰到收集器。
+func (r *syncRecorder[T]) list() []T {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]T(nil), r.vals...)
+}
+
+func (r *syncRecorder[T]) len() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.vals)
+}
+
 // fakePrompter 按脚本回答确认框。
 type fakePrompter struct {
 	answer bool
@@ -175,8 +204,8 @@ type fixture struct {
 	install  string
 	srvURL   string
 	requests int32
-	events   []core.Event
-	audit    []map[string]any
+	events   syncRecorder[core.Event]
+	audit    syncRecorder[map[string]any]
 }
 
 // newFixture 装配一个「四条轴都是假的」引擎。
@@ -255,9 +284,9 @@ func (f *fixture) buildEngine(t *testing.T, tweak func(*Options)) *Engine {
 		Settings: f.set,
 		Apps:     f.afs,
 		Registry: f.reg,
-		Sink:     core.SinkFunc(func(e core.Event) { f.events = append(f.events, e) }),
+		Sink:     core.SinkFunc(f.events.add),
 		Prompter: f.prompt,
-		Audit:    func(entry map[string]any) { f.audit = append(f.audit, entry) },
+		Audit:    f.audit.add,
 	}
 	if tweak != nil {
 		tweak(&opts)
@@ -286,7 +315,7 @@ func (f *fixture) addApp(t *testing.T, id string) {
 // eventsOf 取某个软件的事件消息（拼接）。
 func (f *fixture) eventsOf(kind core.EventKind) []string {
 	var out []string
-	for _, e := range f.events {
+	for _, e := range f.events.list() {
 		if e.Kind == kind {
 			out = append(out, e.Msg)
 		}
@@ -360,8 +389,8 @@ func TestApplyInstallEndToEnd(t *testing.T) {
 	if got := f.eventsOf(core.EventFinished); len(got) != 1 {
 		t.Fatalf("应有 1 个 finished 事件，实际 %v", got)
 	}
-	if len(f.audit) == 0 || f.audit[len(f.audit)-1]["result"] != "success" {
-		t.Fatalf("审计条目缺失或未记成功: %+v", f.audit)
+	if entries := f.audit.list(); len(entries) == 0 || entries[len(entries)-1]["result"] != "success" {
+		t.Fatalf("审计条目缺失或未记成功: %+v", entries)
 	}
 }
 
@@ -470,14 +499,15 @@ func TestApplyCleansUpOnFailure(t *testing.T) {
 	if got := f.eventsOf(core.EventFailed); len(got) != 1 {
 		t.Fatalf("应有 1 个失败事件，实际 %v", got)
 	}
+	entries := f.audit.list()
 	found := false
-	for _, e := range f.audit {
+	for _, e := range entries {
 		if e["result"] == "failed" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("审计里应记失败: %+v", f.audit)
+		t.Fatalf("审计里应记失败: %+v", entries)
 	}
 }
 
@@ -621,8 +651,8 @@ func TestUninstallPassesKeepUserData(t *testing.T) {
 	if len(f.method.uninstalls) != 1 || !f.method.uninstalls[0].KeepUserData {
 		t.Fatalf("应把 KeepUserData 传给适配器，实际 %+v", f.method.uninstalls)
 	}
-	if len(f.audit) == 0 || f.audit[0]["action"] != "uninstall" {
-		t.Fatalf("应记审计: %+v", f.audit)
+	if entries := f.audit.list(); len(entries) == 0 || entries[0]["action"] != "uninstall" {
+		t.Fatalf("应记审计: %+v", entries)
 	}
 }
 
