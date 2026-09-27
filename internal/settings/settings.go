@@ -282,6 +282,11 @@ func Load(path string) (*Settings, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			s.Path = path
+			// 和读到文件时一样归一化一次：目录项的默认值由根目录推导，漏掉这一步的话
+			// 「首次运行」拿到的是一份目录全空的设置，每个调用方都得自己再补一次。
+			if err := s.Normalize(); err != nil {
+				return nil, err
+			}
 			return s, nil
 		}
 		return nil, fmt.Errorf("读取设置 %s: %w", path, err)
@@ -314,14 +319,13 @@ func (s *Settings) Normalize() error {
 		}
 		s.Path = p
 	}
-	root := rootFor(s.Path)
-
-	s.Storage.DataDir = pickDir(s.Storage.DataDir, filepath.Join(root, DirData))
-	s.Storage.CacheDir = pickDir(s.Storage.CacheDir, filepath.Join(root, DirCache))
-	s.Storage.TempDir = pickDir(s.Storage.TempDir, filepath.Join(root, DirTemp))
-	s.Storage.BackupDir = pickDir(s.Storage.BackupDir, filepath.Join(root, DirBackup))
-	s.Logs.Dir = pickDir(s.Logs.Dir, filepath.Join(root, DirLog))
-	s.Plugins.Dir = pickDir(s.Plugins.Dir, filepath.Join(root, DirPlugin))
+	// 目录：留空表示跟随根目录。
+	s.Storage.DataDir = s.ExpandDir(s.Storage.DataDir, DirData)
+	s.Storage.CacheDir = s.ExpandDir(s.Storage.CacheDir, DirCache)
+	s.Storage.TempDir = s.ExpandDir(s.Storage.TempDir, DirTemp)
+	s.Storage.BackupDir = s.ExpandDir(s.Storage.BackupDir, DirBackup)
+	s.Logs.Dir = s.ExpandDir(s.Logs.Dir, DirLog)
+	s.Plugins.Dir = s.ExpandDir(s.Plugins.Dir, DirPlugin)
 
 	if s.Network.TimeoutSeconds < 0 {
 		s.Network.TimeoutSeconds = 0
@@ -444,6 +448,15 @@ func (s *Settings) ConfigDir() string {
 // RootDir 返回便携布局的根目录（config 的上一级）。
 func (s *Settings) RootDir() string {
 	return rootFor(s.Path)
+}
+
+// ExpandDir 把目录设置解析成实际路径：留空表示跟随根目录（<根目录>/<name>）。
+//
+// 设置面板里「留空 = 跟随根目录」显示的就是这个解析结果，落盘时 snapshot 又会把
+// 等于推导默认值的字段清空 —— 两处必须用同一个函数，否则界面显示的位置与实际写进
+// 文件的内容会对不上：界面显示默认路径、文件里却存着死路径，整目录搬走后就指向旧位置。
+func (s *Settings) ExpandDir(v, name string) string {
+	return pickDir(v, filepath.Join(s.RootDir(), name))
 }
 
 // AppsPath 返回 apps.yaml 的路径。

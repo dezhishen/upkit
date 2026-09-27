@@ -196,6 +196,113 @@ func settingText(t *testing.T, m Model, key string) string {
 	return ""
 }
 
+// 设置项比一屏多时，光标要能一路走到最后一项，并且下面还有内容这件事看得出来。
+//
+// 之前的实现是「按屏幕高度切一段 + 补一行提示」，而内容区正好被切满，提示行被边框
+// 截掉；光标移出屏幕后既不滚动、也看不到自己选中的是哪一项 —— 表现就是「设置面板
+// 高度不对，下面的内容显示不出来」。
+func TestSettingsPanelScrolls(t *testing.T) {
+	m := newTestModel(t)
+	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 16})
+	m.tab = tabSettings
+
+	rows := m.settingsRows()
+	if len(rows) < 20 {
+		t.Fatalf("设置项太少（%d），测不出滚动", len(rows))
+	}
+
+	// 光标往下走过一屏后，选中项仍应出现在屏幕上。
+	for i := 0; i < 14; i++ {
+		m = update(t, m, key('j'))
+	}
+	if m.setCursor != 14 {
+		t.Fatalf("光标应停在第 14 项，实际 %d", m.setCursor)
+	}
+	out := content(m)
+	if !strings.Contains(out, rows[14].Label) {
+		t.Fatalf("滚动后选中项 %q 不在屏幕上:\n%s", rows[14].Label, out)
+	}
+	if !strings.Contains(out, "…") {
+		t.Fatalf("下面还有内容时应显示进度提示:\n%s", out)
+	}
+
+	// 末项：窗口贴底，末尾只读的路径信息也要看得见。
+	m = update(t, m, key('G'))
+	if m.setCursor != len(rows)-1 {
+		t.Fatalf("G 应跳到末项，实际 %d", m.setCursor)
+	}
+	out = content(m)
+	if !strings.Contains(out, "清单导出") {
+		t.Fatalf("末项应露出末尾的路径信息:\n%s", out)
+	}
+	if !strings.Contains(out, rows[len(rows)-1].Label) {
+		t.Fatalf("末项自身也应可见 %q:\n%s", rows[len(rows)-1].Label, out)
+	}
+
+	// 回到顶部后窗口跟着回到起点。
+	m = update(t, m, key('g'))
+	if m.setCursor != 0 || m.setOffset != 0 {
+		t.Fatalf("g 应回到首项并复位窗口，实际 cursor=%d offset=%d", m.setCursor, m.setOffset)
+	}
+	if out := content(m); !strings.Contains(out, rows[0].Label) {
+		t.Fatalf("回到首项后应显示第一项 %q:\n%s", rows[0].Label, out)
+	}
+}
+
+// 目录项要能在界面上改：空格弹出输入框，提交后表单与「未保存」标记都要跟着动。
+func TestSettingsPanelEditsDirs(t *testing.T) {
+	m := newTestModel(t)
+	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.tab = tabSettings
+
+	idx := -1
+	for i, f := range m.settingsRows() {
+		if f.Key == "storage.data_dir" {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("设置表单里没有 storage.data_dir")
+	}
+	m.setCursor = idx
+	before := settingText(t, m, "storage.data_dir")
+
+	// 文本项上按左右键不该弹错误框（目录项很容易被误按）。
+	m = update(t, m, key(tea.KeyRight))
+	if m.fatal != nil {
+		t.Fatalf("文本项按右键不应报错: %v", m.fatal)
+	}
+	if !strings.Contains(m.status, "space") {
+		t.Fatalf("应提示怎么编辑，实际状态: %q", m.status)
+	}
+
+	m = update(t, m, key(' '))
+	if m.prompt == nil {
+		t.Fatalf("文本项按空格应弹出输入框")
+	}
+	custom := filepath.Join(t.TempDir(), "elsewhere")
+	m.prompt.Input.SetValue(custom)
+	m = update(t, m, key(tea.KeyEnter))
+
+	if m.prompt != nil {
+		t.Fatalf("回车应关闭输入框")
+	}
+	if got := settingText(t, m, "storage.data_dir"); got != custom {
+		t.Fatalf("目录未改动: %q != %q（原值 %q）", got, custom, before)
+	}
+	if !m.settingsDirty() {
+		t.Fatalf("改目录后应标记为未保存")
+	}
+
+	// 回填空值 = 跟随根目录：显示的应重新变回推导出来的默认路径。
+	m.prompt = m.settingTextPrompt(m.settingsRows()[idx])
+	m.prompt.Input.SetValue("")
+	m = update(t, m, key(tea.KeyEnter))
+	if got := settingText(t, m, "storage.data_dir"); got != before {
+		t.Fatalf("留空后应跟随根目录（%q），实际 %q", before, got)
+	}
+}
+
 // 事件应进入任务面板与日志面板。
 func TestHandleEvent(t *testing.T) {
 	m := newTestModel(t)

@@ -153,6 +153,8 @@ type Model struct {
 	logFollow bool
 
 	setCursor int
+	// setOffset 是设置表单的滚动窗口起点（设置项一屏放不下，光标要能一路走到末项）。
+	setOffset int
 
 	// 来源面板：插件配置的编辑入口就在插件条目上。
 	srcCursor int

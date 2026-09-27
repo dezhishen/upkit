@@ -46,6 +46,10 @@ type settingDef struct {
 	hint   string
 	secret bool
 
+	// dirName 非空表示这是一项目录设置：值的解析与说明都由子目录名推导（留空 =
+	// 跟随根目录）。写在一个字段里而不是每项各写一遍，是为了字面量与提示不会对不上。
+	dirName string
+
 	// 数字项。
 	step, min, max int
 
@@ -95,6 +99,22 @@ var settingCatalog = []settingDef{
 		getInt: func(s *settings.Settings) int { return s.Engine.ApplyConcurrency },
 		setInt: func(s *settings.Settings, v int) { s.Engine.ApplyConcurrency = v }},
 
+	{key: "storage.data_dir", label: "数据目录", dirName: settings.DirData,
+		getStr: func(s *settings.Settings) string { return s.Storage.DataDir },
+		setStr: func(s *settings.Settings, v string) { s.Storage.DataDir = v }},
+
+	{key: "storage.cache_dir", label: "缓存目录", dirName: settings.DirCache,
+		getStr: func(s *settings.Settings) string { return s.Storage.CacheDir },
+		setStr: func(s *settings.Settings, v string) { s.Storage.CacheDir = v }},
+
+	{key: "storage.backup_dir", label: "备份目录", dirName: settings.DirBackup,
+		getStr: func(s *settings.Settings) string { return s.Storage.BackupDir },
+		setStr: func(s *settings.Settings, v string) { s.Storage.BackupDir = v }},
+
+	{key: "storage.temp_dir", label: "临时目录", dirName: settings.DirTemp,
+		getStr: func(s *settings.Settings) string { return s.Storage.TempDir },
+		setStr: func(s *settings.Settings, v string) { s.Storage.TempDir = v }},
+
 	{key: "storage.cache_keep", label: "缓存保留份数", kind: SettingInt, step: 1, min: 0, max: 50,
 		getInt: func(s *settings.Settings) int { return s.Storage.CacheKeep },
 		setInt: func(s *settings.Settings, v int) { s.Storage.CacheKeep = v }},
@@ -126,6 +146,10 @@ var settingCatalog = []settingDef{
 	{key: "behavior.stop_strategy", label: "结束占用进程方式", kind: SettingEnum, opts: []string{"graceful", "force"},
 		getStr: func(s *settings.Settings) string { return s.Behavior.StopStrategy },
 		setStr: func(s *settings.Settings, v string) { s.Behavior.StopStrategy = v }},
+
+	{key: "logs.dir", label: "日志目录", dirName: settings.DirLog,
+		getStr: func(s *settings.Settings) string { return s.Logs.Dir },
+		setStr: func(s *settings.Settings, v string) { s.Logs.Dir = v }},
 
 	{key: "logs.level", label: "日志级别", kind: SettingEnum, opts: []string{"debug", "info", "warn", "error"},
 		getStr: func(s *settings.Settings) string { return s.Logs.Level },
@@ -159,6 +183,10 @@ var settingCatalog = []settingDef{
 		getBool: func(s *settings.Settings) bool { return s.Logs.Redact },
 		setBool: func(s *settings.Settings, v bool) { s.Logs.Redact = v }},
 
+	{key: "plugins.dir", label: "插件目录", dirName: settings.DirPlugin,
+		getStr: func(s *settings.Settings) string { return s.Plugins.Dir },
+		setStr: func(s *settings.Settings, v string) { s.Plugins.Dir = v }},
+
 	{key: "plugins.auto_load_trusted", label: "自动加载已授权插件", kind: SettingBool,
 		getBool: func(s *settings.Settings) bool { return s.Plugins.AutoLoadTrusted },
 		setBool: func(s *settings.Settings, v bool) { s.Plugins.AutoLoadTrusted = v }},
@@ -183,6 +211,21 @@ var settingCatalog = []settingDef{
 	{key: "ui.refresh_ms", label: "刷新间隔（毫秒）", kind: SettingInt, step: 100, min: 100, max: 5000,
 		getInt: func(s *settings.Settings) int { return s.UI.RefreshMS },
 		setInt: func(s *settings.Settings, v int) { s.UI.RefreshMS = v }},
+}
+
+// init 补全目录项：编辑方式与提示都由 dirName 推导。
+//
+// 目录项都是文本项，弹窗里的说明要写出「留空 = 跟随根目录（<根目录>/data）」——
+// 六个地方各写一遍，早晚会有一处与实际解析用的子目录名不一致。
+func init() {
+	for i := range settingCatalog {
+		def := &settingCatalog[i]
+		if def.dirName == "" {
+			continue
+		}
+		def.kind = SettingText
+		def.hint = "绝对路径；留空 = 跟随根目录（<根目录>/" + def.dirName + "）"
+	}
 }
 
 // SettingsForm 返回设置表单的当前状态。
@@ -236,6 +279,11 @@ func (c *Controller) SetSetting(key, raw string) error {
 	if def.kind != SettingText {
 		return fmt.Errorf("设置项 %s 不是文本项，不能用整段写入", key)
 	}
+	if def.dirName != "" {
+		// 目录项：留空表示跟随根目录，解析成实际路径再存 —— 界面上显示的始终是
+		// 实际生效的那个位置，而不是「空」。
+		raw = c.set.ExpandDir(raw, def.dirName)
+	}
 	def.setStr(c.set, raw)
 	c.settingsDirty = true
 	return nil
@@ -260,6 +308,12 @@ func (c *Controller) SettingValue(key string) (string, error) {
 func (c *Controller) SaveSettings() error {
 	if c.set == nil {
 		return fmt.Errorf("设置未加载")
+	}
+	// 先归一化再落盘。非法值（代理缺协议前缀、枚举写错）必须在这里就报出来：写进
+	// 去之后下一次启动会在 Load 里直接失败，而那时界面已经关了，用户只看到程序
+	// 起不来、也没人告诉他哪一项写错了。
+	if err := c.set.Normalize(); err != nil {
+		return err
 	}
 	if err := c.set.Save(); err != nil {
 		return err
@@ -304,7 +358,11 @@ func (c *Controller) ManifestPath() string {
 	return c.set.ManifestPath()
 }
 
-// SettingsPaths 返回只读的路径信息（便携布局：全部在 upkit 同级目录下）。
+// SettingsPaths 返回由启动方式决定、界面上改不了的位置，供界面只读展示。
+//
+// 能在界面上改的目录不在这里 —— 它们是设置项（storage.*_dir / logs.dir /
+// plugins.dir），已经列在表单里。同一件事在屏幕上出现两遍、且一份能改一份不能，
+// 只会让人先按错那个。
 func (c *Controller) SettingsPaths() [][2]string {
 	if c.set == nil {
 		return nil
@@ -315,12 +373,6 @@ func (c *Controller) SettingsPaths() [][2]string {
 		{"设置文件", s.Path},
 		{"来源与配置", s.AppsPath()},
 		{"清单导出", s.ManifestPath()},
-		{"日志目录", s.Logs.Dir},
-		{"插件目录", s.Plugins.Dir},
-		{"数据目录", s.Storage.DataDir},
-		{"缓存目录", s.Storage.CacheDir},
-		{"备份目录", s.Storage.BackupDir},
-		{"临时目录", s.Storage.TempDir},
 	}
 }
 

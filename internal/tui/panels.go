@@ -42,10 +42,7 @@ func (m Model) render() string {
 
 	head := m.viewHeader(m.width)
 	foot := m.viewFooter(m.width)
-	bodyH := m.height - countLines(head) - countLines(foot)
-	if bodyH < 4 {
-		bodyH = 4
-	}
+	bodyH := m.bodyHeight()
 	base := head + "\n" + m.viewBody(m.width, bodyH) + "\n" + foot
 
 	switch {
@@ -64,6 +61,25 @@ func (m Model) overlay(base, modal string) string {
 	return m.theme.Overlay(m.theme.Dimmed(base), modal, m.width, m.height)
 }
 
+// bodyHeight 返回正文面板的可用高度：总高减去头部与底栏各占的行数。
+//
+// 单独拿出来是因为按键处理也得知道「一屏能放几行」—— 设置面板要据此把光标留在可见
+// 范围内，而按键处理里根本没有渲染时的那个 bodyH。
+func (m Model) bodyHeight() int {
+	h := m.height
+	if h <= 0 {
+		h = 24
+	}
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	body := h - countLines(m.viewHeader(w)) - countLines(m.viewFooter(w))
+	if body < 4 {
+		body = 4
+	}
+	return body
+}
 func countLines(s string) int {
 	if s == "" {
 		return 0
@@ -457,35 +473,44 @@ func (m Model) viewLogs(w, height int) string {
 // ── 设置 ──────────────────────────────────────────────────────
 
 func (m Model) viewSettings(w, height int) string {
-	var b strings.Builder
-	for i, f := range m.settingsRows() {
-		focus := i == m.setCursor
+	rows := m.settingsRows()
+	lines := m.settingsLines(rows, w)
+	// 光标停在末项时窗口贴底：末项之后还有只读的路径信息，不贴底就永远看不到那几行。
+	sticky := len(rows) > 0 && m.setCursor >= len(rows)-1
+	body := m.scrollWindow(lines, m.setOffset, sticky, height-2)
+	return m.theme.Frame("设置（←/→ 调整 · space 编辑 · s 保存 · R 恢复默认）",
+		strings.Join(body, "\n"), w, height, true)
+}
+
+// settingsLines 把设置表单与末尾只读的路径信息摊平成可直接裁剪的行。
+//
+// 摊平后再滚动，而不是让表格组件去滚：路径信息是分组的文本，不是表格行，而光标只需
+// 要对准表单项（路径那一段没有可操作的东西）。
+func (m Model) settingsLines(rows []control.SettingItem, w int) []string {
+	lines := make([]string, 0, len(rows)+8)
+	for i, f := range rows {
 		value := f.Text
 		if f.Kind == control.SettingBool || f.Kind == control.SettingEnum {
 			value = "‹ " + value + " ›"
 		}
 		// 标签列固定 26 列；Cell 按显示宽度补齐，中英混排也能对齐。
-		row := m.theme.Cursor(focus) + " " + Cell(f.Label, 26) + " " + value
-		if focus {
+		row := m.theme.Cursor(i == m.setCursor) + " " + Cell(f.Label, 26) + " " + value
+		if i == m.setCursor {
 			// 铺满内容区（面板宽 - 左右边框 - 左右内边距），高亮才是一条完整色块。
 			row = m.theme.SelectedRow().Render(Cell(row, w-4))
 		}
-		b.WriteString(row)
-		b.WriteString("\n")
+		lines = append(lines, row)
 	}
 
-	b.WriteString("\n")
-	b.WriteString(m.theme.Primary().Render("路径"))
-	b.WriteString("\n")
-	for _, kv := range m.ctrl.SettingsPaths() {
-		fmt.Fprintf(&b, "  %s %s\n", m.theme.Dim().Render(Cell(kv[0], 12)), kv[1])
+	lines = append(lines, "")
+	lines = append(lines, m.theme.Primary().Render("路径（只读 · 根目录由启动方式决定）"))
+	for _, kv := range m.settingsPaths() {
+		lines = append(lines, fmt.Sprintf("  %s %s", m.theme.Dim().Render(Cell(kv[0], 12)), kv[1]))
 	}
-	if m.ctrl.SettingsDirty() {
-		b.WriteString("\n")
-		b.WriteString(m.theme.Warn().Render("有未保存的修改，按 s 保存。"))
+	if m.settingsDirty() {
+		lines = append(lines, "", m.theme.Warn().Render("有未保存的修改，按 s 保存。"))
 	}
-	return m.theme.Frame("设置（←/→ 调整 · s 保存 · R 恢复默认）",
-		m.scroll(strings.TrimRight(b.String(), "\n"), height-2), w, height, true)
+	return lines
 }
 
 // ── 弹窗 ──────────────────────────────────────────────────────
@@ -553,32 +578,36 @@ func (m Model) viewFooter(width int) string {
 // ── 小工具 ────────────────────────────────────────────────────
 
 func (m Model) scroll(content string, height int) string {
-	lines := strings.Split(content, "\n")
 	if height <= 0 {
 		return content
 	}
-	max := len(lines) - height
-	if max < 0 {
-		max = 0
+	return strings.Join(m.scrollWindow(strings.Split(content, "\n"), m.detailY, false, height), "\n")
+}
+
+// scrollWindow 从 lines 里裁出可见窗口：offset 是窗口起点，sticky 为真时贴到底部。
+//
+// 需要滚动时必须留一行给底部的「… n/m」提示。以前是「先切 height 行、再补一行提示」，
+// 而内容区正好只有 height 行，提示被边框截掉 —— 于是「下面还有内容」这件事在屏幕上
+// 完全看不出来：设置项超出屏幕后只剩半屏，也没有任何可滚动的迹象。
+func (m Model) scrollWindow(lines []string, offset int, sticky bool, height int) []string {
+	if height <= 0 || len(lines) <= height {
+		return lines
 	}
-	if m.detailY > max {
-		m.detailY = max
+	visible := height - 1
+	max := len(lines) - visible
+	if sticky {
+		offset = max
 	}
-	if m.detailY < 0 {
-		m.detailY = 0
+	if offset > max {
+		offset = max
 	}
-	if m.detailY >= len(lines) {
-		return content
+	if offset < 0 {
+		offset = 0
 	}
-	end := m.detailY + height
-	if end > len(lines) {
-		end = len(lines)
-	}
-	out := lines[m.detailY:end]
-	if max > 0 {
-		out = append(out, m.theme.Dim().Render(fmt.Sprintf("… %d/%d", m.detailY+1, max+1)))
-	}
-	return strings.Join(out, "\n")
+	out := make([]string, 0, visible+1)
+	out = append(out, lines[offset:offset+visible]...)
+	out = append(out, m.theme.Dim().Render(fmt.Sprintf("… %d/%d", offset+1, len(lines))))
+	return out
 }
 
 func minInt(a, b int) int {

@@ -20,6 +20,55 @@ func (m Model) settingsRows() []control.SettingItem {
 	return m.ctrl.SettingsForm()
 }
 
+// settingsPaths 返回由启动方式决定、界面上改不了的路径（只读展示）。
+func (m Model) settingsPaths() [][2]string {
+	if m.ctrl == nil {
+		return nil
+	}
+	return m.ctrl.SettingsPaths()
+}
+
+// settingsDirty 报告有没有还没落盘的修改（状态由控制层记）。
+func (m Model) settingsDirty() bool {
+	return m.ctrl != nil && m.ctrl.SettingsDirty()
+}
+
+// settingsViewport 返回设置面板一屏能放下几行设置项。
+//
+// 面板内高 = 正文高 - 上下边框，再留一行给底部的「… n/m」提示。宁少算一行：窗口比实际
+// 小，光标只会更早开始滚动；算多了就会让选中行跑出屏幕。
+func (m Model) settingsViewport() int {
+	v := m.bodyHeight() - 2 - 1
+	if v < 1 {
+		v = 1
+	}
+	return v
+}
+
+// followSettings 把滚动窗口挪到能看见选中项的位置。
+//
+// 设置项一屏放不下（末尾还有只读的路径信息），而 j/k 只动光标、窗口不跟的话，光标
+// 走出屏幕后既看不出自己选的是哪一项，也看不出下面还有东西。
+func (m *Model) followSettings(rows int) {
+	win := m.settingsViewport()
+	if rows <= 0 || m.setCursor < 0 {
+		m.setOffset = 0
+		return
+	}
+	if max := rows - win; m.setOffset > max {
+		m.setOffset = max
+	}
+	if m.setOffset < 0 {
+		m.setOffset = 0
+	}
+	if m.setCursor < m.setOffset {
+		m.setOffset = m.setCursor
+	}
+	if m.setCursor >= m.setOffset+win {
+		m.setOffset = m.setCursor - win + 1
+	}
+}
+
 func (m Model) updateSettings(key string) (tea.Model, tea.Cmd) {
 	rows := m.settingsRows()
 	switch key {
@@ -45,7 +94,7 @@ func (m Model) updateSettings(key string) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "s":
-		if !m.ctrl.SettingsDirty() {
+		if !m.settingsDirty() {
 			m.setStatus("没有需要保存的修改")
 			return m, nil
 		}
@@ -73,9 +122,10 @@ func (m Model) updateSettings(key string) (tea.Model, tea.Cmd) {
 	if m.setCursor < 0 {
 		m.setCursor = 0
 	}
-	if m.setCursor >= len(rows) {
-		m.setCursor = len(rows) - 1
+	if n := len(rows); m.setCursor >= n {
+		m.setCursor = n - 1
 	}
+	m.followSettings(len(rows))
 	return m, nil
 }
 
@@ -85,7 +135,14 @@ func (m *Model) adjustSetting(delta int) {
 	if m.setCursor < 0 || m.setCursor >= len(rows) {
 		return
 	}
-	if err := m.ctrl.AdjustSetting(rows[m.setCursor].Key, delta); err != nil {
+	f := rows[m.setCursor]
+	if f.Kind == control.SettingText {
+		// 文本项没有可增减的值：提一句怎么改，而不是弹个「不能用增减调整」的错误框 ——
+		// 在目录项上按左右键是很容易发生的事。
+		m.setStatus(f.Label + "：按 space 整段输入")
+		return
+	}
+	if err := m.ctrl.AdjustSetting(f.Key, delta); err != nil {
 		m.setStatusErr(err)
 	}
 }
