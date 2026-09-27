@@ -251,3 +251,54 @@ func TestSaveSettingsPropagatesInstallRoot(t *testing.T) {
 		t.Fatalf("恢复默认后安装根目录不该还是 %q", custom)
 	}
 }
+
+// 设置项必须分组，且同一组的项在表单里连续出现。
+//
+// 界面靠「Group 变了就插一个标题」排版，所以这条不变量是排版正确的前提：清单顺序写乱
+// 了（把一条 logs 混进 storage 里）就会出现两个「存储与位置」段。
+func TestSettingsFormGroupsAreContiguous(t *testing.T) {
+	ctrl := newSettingsTestController(t)
+	form := ctrl.SettingsForm()
+	if len(form) == 0 {
+		t.Fatalf("设置表单为空")
+	}
+
+	seen := map[string]bool{}
+	prev := ""
+	order := []string{}
+	for _, it := range form {
+		if it.Group == "" {
+			t.Fatalf("设置项 %s 没有分组：前缀不在分组表里", it.Key)
+		}
+		if it.Group != prev {
+			if seen[it.Group] {
+				t.Fatalf("分组 %q 被拆成了两段（顺序写乱了）", it.Group)
+			}
+			seen[it.Group] = true
+			order = append(order, it.Group)
+			prev = it.Group
+		}
+	}
+
+	// 顺序应与分组表一致（分组表就是界面上的顺序）。
+	want := []string{}
+	for _, g := range settingGroups {
+		if seen[g.label] {
+			want = append(want, g.label)
+		}
+	}
+	if len(order) != len(want) {
+		t.Fatalf("分组数量不一致：%v != %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("分组顺序应为 %v，实际 %v", want, order)
+		}
+	}
+	// 每一项都得落在一个认识的组里（前缀写错的兜底）。
+	for _, it := range form {
+		if groupOf(it.Key) == "" {
+			t.Fatalf("设置项 %s 的前缀没有对应的分组", it.Key)
+		}
+	}
+}

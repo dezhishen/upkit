@@ -189,3 +189,42 @@ func TestLogFollowKeyIsTopBottom(t *testing.T) {
 		t.Fatalf("G 应回到末尾并恢复跟随")
 	}
 }
+
+// 设置面板要按分组分段显示：段标题出现在表单里，且它们不可被选中（光标只落在项上）。
+func TestSettingsPanelShowsGroups(t *testing.T) {
+	m := newTestModel(t)
+	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m.tab = tabSettings
+
+	rows := m.settingsRows()
+	// 只看设置面板本身：整屏的标签行里也有「4 日志」，会干扰下面的顺序断言。
+	out := m.viewSettings(96, 30)
+	var groups []string
+	seen := map[string]bool{}
+	for _, f := range rows {
+		if f.Group != "" && !seen[f.Group] {
+			seen[f.Group] = true
+			groups = append(groups, f.Group)
+		}
+	}
+	if len(groups) < 5 {
+		t.Fatalf("设置项应分成多组，实际 %v", groups)
+	}
+	// 高度 40 只放得下前几组，至少第一组要看得见。
+	if !strings.Contains(out, groups[0]) {
+		t.Fatalf("设置面板未显示分组标题 %q:\n%s", groups[0], out)
+	}
+
+	// 屏幕上的分组标题必须按表单顺序出现（顺序错了说明排版与布局对不上）。
+	at := -1
+	for _, g := range groups {
+		i := strings.Index(out, g)
+		if i < 0 {
+			continue // 一屏放不下后面的组
+		}
+		if i < at {
+			t.Fatalf("分组标题 %q 的位置在上一组之前:\n%s", g, out)
+		}
+		at = i
+	}
+}

@@ -49,23 +49,29 @@ func (m Model) settingsViewport() int {
 //
 // 设置项一屏放不下（末尾还有只读的路径信息），而 j/k 只动光标、窗口不跟的话，光标
 // 走出屏幕后既看不出自己选的是哪一项，也看不出下面还有东西。
-func (m *Model) followSettings(rows int) {
+func (m *Model) followSettings(rows []control.SettingItem) {
 	win := m.settingsViewport()
-	if rows <= 0 || m.setCursor < 0 {
+	if len(rows) == 0 || m.setCursor < 0 {
 		m.setOffset = 0
 		return
 	}
-	if max := rows - win; m.setOffset > max {
+	// 按行号算：分组标题与组间空行都占行，拿项下标当行号会让窗口跟光标差几行。
+	lines, itemLine := m.settingsLines(rows, m.width)
+	line := 0
+	if m.setCursor < len(itemLine) {
+		line = itemLine[m.setCursor]
+	}
+	if m.setOffset > line {
+		m.setOffset = line // 光标跑到窗口上方：窗口跟着上移
+	}
+	if line >= m.setOffset+win {
+		m.setOffset = line - win + 1
+	}
+	if max := windowMaxStart(len(lines), m.bodyHeight()-2); m.setOffset > max {
 		m.setOffset = max
 	}
 	if m.setOffset < 0 {
 		m.setOffset = 0
-	}
-	if m.setCursor < m.setOffset {
-		m.setOffset = m.setCursor
-	}
-	if m.setCursor >= m.setOffset+win {
-		m.setOffset = m.setCursor - win + 1
 	}
 }
 
@@ -78,6 +84,7 @@ func (m Model) updateSettings(key string) (tea.Model, tea.Cmd) {
 		m.setCursor--
 	case "g", "home":
 		m.setCursor = 0
+		m.setOffset = 0 // 「跳到开头」就该看到最上面：第一个分组的标题也在那儿
 	case "G", "end":
 		m.setCursor = len(rows) - 1
 	case "left", "h":
@@ -127,7 +134,7 @@ func (m Model) updateSettings(key string) (tea.Model, tea.Cmd) {
 	if n := len(rows); m.setCursor >= n {
 		m.setCursor = n - 1
 	}
-	m.followSettings(len(rows))
+	m.followSettings(rows)
 	return m, nil
 }
 

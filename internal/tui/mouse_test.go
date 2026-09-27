@@ -62,22 +62,23 @@ func TestMouseRowClickAndDoubleClick(t *testing.T) {
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.tab = tabSettings
 
-	// 内容区从第 2 行开始（第 0 行标签、第 1 行上边框）。
-	m = update(t, m, click(4, 2))
+	// 内容区从第 2 行开始（第 0 行标签、第 1 行上边框），而第一行是分组标题「网络」，
+	// 所以第 1 项落在 y=3。
+	m = update(t, m, click(4, 3))
 	if m.setCursor != 0 {
-		t.Fatalf("点第 1 行应选中第 1 项，实际 %d", m.setCursor)
+		t.Fatalf("点第 1 项应选中它，实际 %d", m.setCursor)
 	}
 
 	// 同一位置再点一次 = 双击 = 回车：网络代理是文本项，应弹出输入框。
-	m = update(t, m, click(4, 2))
+	m = update(t, m, click(4, 3))
 	if m.prompt == nil {
 		t.Fatalf("双击文本项应打开编辑框")
 	}
 
 	// 数字项双击 = 打开编辑框整段输入（预填当前值）。
 	m.prompt = nil
-	m = update(t, m, click(4, 3))
-	m = update(t, m, click(4, 3))
+	m = update(t, m, click(4, 4))
+	m = update(t, m, click(4, 4))
 	if m.prompt == nil {
 		t.Fatalf("双击数字项应打开编辑框")
 	}
@@ -180,5 +181,13 @@ func TestMouseClickSourceRow(t *testing.T) {
 	m = update(t, m, click(4, 2))
 	if m.srcCursor != 1 {
 		t.Fatalf("点分组标题不应改选中行，实际 %d", m.srcCursor)
+	}
+
+	// 设置面板同理：分组标题占一行，点它不改选中项。
+	m.tab = tabSettings
+	m.setCursor = 1
+	m = update(t, m, click(4, 2))
+	if m.setCursor != 1 {
+		t.Fatalf("点设置面板的分组标题不应改选中项，实际 %d", m.setCursor)
 	}
 }

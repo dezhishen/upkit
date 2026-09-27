@@ -133,11 +133,7 @@ func (m Model) rowAt(y int) (int, bool) {
 	case tabJobs:
 		return rowInTable(line, m.jobOffset, len(m.jobs))
 	case tabSettings:
-		idx := line + m.setOffset
-		if idx < 0 || idx >= len(m.settingsRows()) {
-			return 0, false
-		}
-		return idx, true
+		return m.settingsRowAt(line)
 	case tabSources:
 		return m.sourceRowAt(line)
 	}
@@ -167,7 +163,7 @@ func (m Model) selectRow(idx int) Model {
 		m.clampJobCursor()
 	case tabSettings:
 		m.setCursor = idx
-		m.followSettings(len(m.settingsRows()))
+		m.followSettings(m.settingsRows())
 	case tabSources:
 		if m.feedFor != "" {
 			m.feedCursor = idx

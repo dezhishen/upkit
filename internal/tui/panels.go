@@ -485,21 +485,55 @@ func (m Model) viewLogs(w, height int) string {
 
 func (m Model) viewSettings(w, height int) string {
 	rows := m.settingsRows()
-	lines := m.settingsLines(rows, w)
-	// 光标停在末项时窗口贴底：末项之后还有只读的路径信息，不贴底就永远看不到那几行。
-	sticky := len(rows) > 0 && m.setCursor >= len(rows)-1
-	body := m.scrollWindow(lines, m.setOffset, sticky, height-2)
+	lines, _ := m.settingsLines(rows, w)
+	body := m.scrollWindow(lines, m.setOffset, m.settingsStickyBottom(rows), height-2)
 	return m.theme.Frame("设置",
 		strings.Join(body, "\n"), w, height, true)
+}
+
+// settingsRowAt 把内容行号翻成设置项下标（分组标题、空行、末尾的路径信息都不算）。
+func (m Model) settingsRowAt(contentLine int) (int, bool) {
+	rows := m.settingsRows()
+	lines, itemLine := m.settingsLines(rows, m.width)
+	start := windowStart(len(lines), m.setOffset, m.settingsStickyBottom(rows), m.bodyHeight()-2)
+	target := contentLine + start
+	for i, l := range itemLine {
+		if l == target {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// settingsStickyBottom 报告窗口是否该贴底（光标停在末项时）。
+func (m Model) settingsStickyBottom(rows []control.SettingItem) bool {
+	return len(rows) > 0 && m.setCursor >= len(rows)-1
 }
 
 // settingsLines 把设置表单与末尾只读的路径信息摊平成可直接裁剪的行。
 //
 // 摊平后再滚动，而不是让表格组件去滚：路径信息是分组的文本，不是表格行，而光标只需
 // 要对准表单项（路径那一段没有可操作的东西）。
-func (m Model) settingsLines(rows []control.SettingItem, w int) []string {
-	lines := make([]string, 0, len(rows)+8)
+// settingsLines 把设置表单摊平成行（含分组标题），并给出每一项所在的行号。
+//
+// 分组标题与组间空行都占行号，所以「第几项 = 第几行」不再成立 —— 渲染、光标跟随、
+// 鼠标命中三处共用这一份布局。任何一处另算一遍，多一个分组就会让点击选错一行。
+func (m Model) settingsLines(rows []control.SettingItem, w int) ([]string, []int) {
+	lines := make([]string, 0, len(rows)+16)
+	itemLine := make([]int, len(rows))
+	group := ""
 	for i, f := range rows {
+		if f.Group != group {
+			// 组间空一行，读起来才像分段而不是一长串。
+			if group != "" {
+				lines = append(lines, "")
+			}
+			if f.Group != "" {
+				lines = append(lines, m.theme.Header().Render(f.Group))
+			}
+			group = f.Group
+		}
+		itemLine[i] = len(lines)
 		value := f.Text
 		if f.Kind == control.SettingBool || f.Kind == control.SettingEnum {
 			value = "‹ " + value + " ›"
@@ -521,7 +555,7 @@ func (m Model) settingsLines(rows []control.SettingItem, w int) []string {
 	if m.settingsDirty() {
 		lines = append(lines, "", m.theme.Warn().Render("有未保存的修改，按 s 保存。"))
 	}
-	return lines
+	return lines, itemLine
 }
 
 // ── 弹窗 ──────────────────────────────────────────────────────
@@ -632,20 +666,37 @@ func (m Model) scrollWindow(lines []string, offset int, sticky bool, height int)
 		return lines
 	}
 	visible := height - 1
-	max := len(lines) - visible
-	if sticky {
-		offset = max
+	start := windowStart(len(lines), offset, sticky, height)
+	out := make([]string, 0, visible+1)
+	out = append(out, lines[start:start+visible]...)
+	out = append(out, m.theme.Dim().Render(fmt.Sprintf("… %d/%d", start+1, len(lines))))
+	return out
+}
+
+// windowStart 算出滚动窗口的实际起点（夹取与贴底都在这里）。
+//
+// 单独拿出来是因为鼠标命中也要知道窗口被夹到哪了：渲染用一个 offset、命中另算一遍的话，
+// 滚到底之后再点击就会整体偏移。
+func windowStart(total, offset int, sticky bool, height int) int {
+	if height <= 0 || total <= height {
+		return 0
 	}
-	if offset > max {
+	max := windowMaxStart(total, height)
+	if sticky || offset > max {
 		offset = max
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	out := make([]string, 0, visible+1)
-	out = append(out, lines[offset:offset+visible]...)
-	out = append(out, m.theme.Dim().Render(fmt.Sprintf("… %d/%d", offset+1, len(lines))))
-	return out
+	return offset
+}
+
+// windowMaxStart 是窗口能落到的最远起点（再往下就没内容了）。
+func windowMaxStart(total, height int) int {
+	if height <= 0 || total <= height {
+		return 0
+	}
+	return total - (height - 1)
 }
 
 func minInt(a, b int) int {

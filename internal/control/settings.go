@@ -2,6 +2,7 @@ package control
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -36,6 +37,45 @@ type SettingItem struct {
 	Hint string
 	// Secret 为真表示这是凭据类文本项，输入框按密码模式回显，不预填原值。
 	Secret bool
+	// Group 是分组标题：界面按它把表单分段显示（同一组的项一定连续）。
+	Group string
+}
+
+// settingGroups 是设置项的分组：key 前缀 → 段标题，顺序即界面上的顺序。
+//
+// 分组由 key 的前缀推出来（network. / storage. / logs. …），而不是在每一项上手写一遍：
+// 手写的话，新增一项忘写分组、或把 storage 的项塞进 logs 段里，都没人会立刻发现。
+var settingGroups = []struct {
+	prefix string
+	label  string
+}{
+	{"network.", "网络"},
+	{"engine.", "下载与安装"},
+	{"storage.", "存储与位置"},
+	{"behavior.", "行为"},
+	{"logs.", "日志"},
+	{"plugins.", "插件"},
+	{"ui.", "界面"},
+}
+
+// groupOf 返回某项所属的分组标题（认不出的前缀归到空串，界面会单独兜底）。
+func groupOf(key string) string {
+	for _, g := range settingGroups {
+		if strings.HasPrefix(key, g.prefix) {
+			return g.label
+		}
+	}
+	return ""
+}
+
+// groupOrder 返回分组在界面上的次序（认不出的排最后）。
+func groupOrder(label string) int {
+	for i, g := range settingGroups {
+		if g.label == label {
+			return i
+		}
+	}
+	return len(settingGroups)
 }
 
 // settingDef 是一项设置的读写定义（取值、范围、解析都在这张表里）。
@@ -255,8 +295,14 @@ func (c *Controller) SettingsForm() []SettingItem {
 			Step:   def.step,
 			Hint:   hint,
 			Secret: def.secret,
+			Group:  groupOf(def.key),
 		})
 	}
+	// 按分组表排一遍（组内保持清单里的相对顺序）：界面只要按「Group 变了」插一个
+	// 标题就行，不必自己维护分组顺序，清单顺序写乱了也不会散开。
+	sort.SliceStable(out, func(i, j int) bool {
+		return groupOrder(out[i].Group) < groupOrder(out[j].Group)
+	})
 	return out
 }
 
