@@ -75,6 +75,11 @@ subscription: https://example.com/plugins.json
 
 这样"哪些插件是订阅装的、装的是哪个版本"可以从文件本身还原，便于更新检测与审计。
 
+**sidecar 不承载信任**：它和可执行文件在同一个目录、同样可写，拿它当信任依据等于取消了
+"首次启动确认 sha256"这道门。信任只记在 `apps.yaml` 的 `sources[].trust` 里，而订阅安装
+会把已经校验过的摘要直接写进去（因为下载本身已经过三级授权 + 摘要强制校验），装完即可用。
+关掉 `设置 → 插件 → 自动加载已授权插件` 则留回逐个确认。
+
 ## 5. 更新与降级
 
 - `Entry.Action()` 会给出 `install` / `update` / `current` / `downgrade` 四种判定；

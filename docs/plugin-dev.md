@@ -86,23 +86,27 @@ timeout_seconds: 20      # 可省略
 
 **插件等于任意代码执行**，因此 upkit 不会自动运行新发现的插件：
 
-1. 首次启动时，upkit 扫描 `plugin/` 目录，把未信任的插件记为
-   `untrusted` 并**跳过启动**，同时在日志里给出它的 `sha256`；
-2. 你确认来源可信后，把该哈希写进 `apps.yaml`：
+1. 启动时 upkit 扫描 `plugin/` 目录，把未信任的插件记为 `untrusted` 并**跳过启动**：
+   「来源」面板里显示 `? 未信任 · 按 t 信任`，日志里也会给出它的 `sha256`；
+2. 在「来源」面板选中它按 `t`，确认框会把**可执行文件路径与 sha256** 都摆出来 ——
+   信任比的是「这个文件是不是我要的那个」，只给一个 id 没法判断。核对无误后确认，
+   upkit 把它记进 `apps.yaml` 并立即加载：
 
 ```yaml
 sources:
   - id: my-source
     kind: plugin
-    enabled: true
-    mode: catalog
-    trust: "3b1f…"        # 上一步日志里的 sha256
-    apps:                 # 可选：源内软件级开关
-      - id: legacy-crm
-        enabled: false
+    trust: "3b1f…"        # 面板确认时写入的 sha256
 ```
 
+   清单里原本没有这条来源时，按 `t` 会自动补一条最小条目；`exec`、`mode` 之类仍由
+   sidecar 提供，不必在两个文件里各写一份。也可以自己写这份 `apps.yaml`，再按 `r`
+   重载（`r` 会重读磁盘上的清单），或重启 upkit。
 3. 插件文件一旦被替换，哈希变化，需要重新信任 —— 这能挡住"同名文件被偷偷换掉"。
+
+订阅安装的插件不走这一步：包的摘要在安装时已按你授权过的订阅强制校验过，upkit 会把
+结果直接记进信任。不想给这个便利（希望每个插件都自己点头一次），就关掉
+`设置 → 插件 → 自动加载已授权插件`，那样它们会停在未信任，由你按 `t` 决定。
 
 插件被用户直接双击运行时不会静默挂起：upkit 通过握手令牌识别，go-plugin 会打印
 `This binary is a plugin. These are not meant to be executed directly.` 后退出。
@@ -303,8 +307,9 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o dist/my-plugin.exe
 go build -o dist/my-plugin ./cmd/upkit-plugin-example
 ```
 
-把产物放进 upkit 的 `plugin/` 目录，同时配一个 `my-plugin.plugin.yaml` 并写好 trust，
-才能被宿主加载 —— 见上面第 2、3 节。
+把产物放进 upkit 的 `plugin/` 目录，再配一个 `my-plugin.plugin.yaml`（sidecar 描述这个可执行文件
+是什么插件，**不承载信任**），然后在「来源」面板按 `t` 把它的 sha256 记进信任，才能被宿主
+加载 —— 见上面第 2、3 节。
 
 插件进程的 stdout/stderr 会带 `plugin=...` 前缀写进 upkit 日志（`log/upkit-*.jsonl`），
 排查启动失败时先看这里。

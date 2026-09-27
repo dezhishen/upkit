@@ -90,10 +90,16 @@ type Storage struct {
 	BudgetMB       int    `yaml:"budget_mb"`
 }
 
-// Plugins 是插件相关设置（插件子系统尚未实现，配置先保留）。
+// Plugins 是插件相关设置。
 type Plugins struct {
-	Dir              string   `yaml:"dir"`
-	AutoLoadTrusted  bool     `yaml:"auto_load_trusted"`
+	Dir string `yaml:"dir"`
+	// AutoLoadTrusted 为真时，订阅安装成功的插件直接记入信任并加载 —— 安装已经过用户
+	// 三级授权（功能开关 → 订阅域名 → 跨域下载域名），包摘要也在下载后强制校验过。
+	// 为假时插件保持「未信任」，需要用户在来源面板按 t 逐个确认。
+	//
+	// 手工放进 plugin/ 的插件不受这项影响：它没经过任何授权，一律需要显式信任。
+	AutoLoadTrusted bool `yaml:"auto_load_trusted"`
+	// RequireSignature 要求插件带签名（尚未实现，仅保留配置）。
 	RequireSignature bool     `yaml:"require_signature"`
 	Allowlist        []string `yaml:"allowlist"`
 }

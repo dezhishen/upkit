@@ -158,6 +158,34 @@ func (m *Manager) SourceIDs() []string {
 	return out
 }
 
+// Reconfigure 用新的来源声明重建来源列表并重新加载。
+//
+// 光调 Load 是不够的：每个 item 在构造时就捕获了一份 entry 副本，清单里新补的来源、
+// 新写入的信任哈希、改过的启用开关它都看不到 —— 界面改完清单再「重载」，插件依然停在
+// 原来的状态（手工放进 plugin/ 的插件信任之后仍不启动，就是卡在这里）。
+//
+// 旧连接必须显式停掉：item 里握着插件进程，直接换掉 items 会漏掉一批进程。
+func (m *Manager) Reconfigure(ctx context.Context, entries []apps.SourceSpec) error {
+	cfg := m.cfg
+	cfg.Entries = entries
+	next, err := NewManager(cfg)
+	if err != nil {
+		return err
+	}
+
+	// 先用新建的列表校验通过，再停旧进程换列表，避免配置非法时把好好的连接打断。
+	m.Close()
+
+	m.mu.Lock()
+	m.cfg = cfg
+	m.items = next.items
+	m.byID = next.byID
+	m.mu.Unlock()
+
+	m.Load(ctx)
+	return nil
+}
+
 // Load 依次启动所有可用的来源。
 //
 // 单个来源失败绝不影响其它来源，也不影响内置能力：失败原因记录在状态里供界面展示。
@@ -229,7 +257,7 @@ func (m *Manager) start(ctx context.Context, it *item) {
 	it.sha = sha
 
 	if !Trusted(it.entry.Trust, sha) {
-		detail := fmt.Sprintf("未信任，已跳过启动。其 sha256 为 %s；确认来源可信后把它写入清单的 sources[%s].trust 即可启用", sha, id)
+		detail := fmt.Sprintf("未信任，已跳过启动。其 sha256 为 %s；在「来源」面板选中它按 t 确认信任即可启用（也可以自己写进清单的 sources[%s].trust）", sha, id)
 		m.setState(it, StateUntrusted, detail)
 		return
 	}

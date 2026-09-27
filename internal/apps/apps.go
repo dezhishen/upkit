@@ -138,6 +138,26 @@ func (s *SourceSpec) SetAppEnabled(appID string, enabled bool) {
 	s.Apps = append(s.Apps, SourceAppSpec{ID: appID, Enabled: &v})
 }
 
+// SetSourceTrust 记录某个插件来源的信任哈希（就地修改，由调用方负责落盘）。
+//
+// 来源不在清单里时补一条最小条目：宿主会扫描插件目录，把手工放进 plugin/ 的插件也
+// 报出来，但这类插件只存在于运行时，不写进清单就没有地方承载信任决定
+// （sidecar 按设计不承载它，见 pluginhost.Manifest）。只写 id / kind / trust，
+// exec 与 mode 之类留给 sidecar —— 同一份信息在两个文件里各写一遍，迟早改一处忘一处。
+func (f *File) SetSourceTrust(id, trust string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	for i := range f.Sources {
+		if f.Sources[i].ID == id {
+			f.Sources[i].Trust = trust
+			return
+		}
+	}
+	f.Sources = append(f.Sources, SourceSpec{ID: id, Kind: KindPlugin, Trust: trust})
+}
+
 // AppSpec 是单个软件的声明。
 //
 // 它由插件来源提供（不再从文件读取），字段保留 yaml tag 只为导出与调试可读。

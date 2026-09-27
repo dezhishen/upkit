@@ -342,6 +342,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.appendLog(logEntry{At: time.Now(), Level: "info", App: msg.entry.Plugin.ID,
 			Msg: "已从订阅安装 v" + msg.entry.Plugin.Version})
+		// 把信任一并记进清单，否则刚装好的插件会停在「未信任」而不启动。
+		//
+		// 依据就在安装这一步本身：走的是用户逐级授权过的订阅（功能开关 → 订阅域名 →
+		// 跨域下载域名），包的 sha256 也在下载后被强制校验过，那个摘要就是用户授权过的
+		// 内容。关掉 Plugins.AutoLoadTrusted 则退回逐个确认（来源面板按 t）。
+		if m.set != nil && m.set.Plugins.AutoLoadTrusted &&
+			m.afs != nil && msg.result != nil && msg.result.ID != "" && msg.result.SHA256 != "" {
+			m.afs.SetSourceTrust(msg.result.ID, msg.result.SHA256)
+			if err := m.afs.Save(); err != nil {
+				m.setStatusErr(fmt.Errorf("记录插件信任失败: %w", err))
+				return m, nil
+			}
+		}
 		// 新插件立刻生效；随后刷新订阅以反映最新状态。
 		if m.host != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

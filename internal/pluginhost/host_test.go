@@ -207,7 +207,7 @@ func TestManagerStatesWithoutStartingProcesses(t *testing.T) {
 			t.Errorf("来源 %s 状态应为 %s，实际 %s（%s）", id, want, got[id].State, got[id].Detail)
 		}
 	}
-	// 未信任时应当把哈希打出来，方便用户写进清单。
+	// 未信任时应当把哈希打出来，方便用户核对后去界面确认信任。
 	if got["untrusted-src"].SHA256 == "" {
 		t.Error("未信任来源应当给出 sha256")
 	}

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -26,6 +27,13 @@ type sourceRow struct {
 	version string
 	apps    int
 
+	// declared 表示这个来源在清单里有没有条目。宿主会把「插件目录里发现到、但清单里
+	// 没声明」的插件也报出来，它们在被信任之前一直缺一个可落盘的承载。
+	declared bool
+	// sha / exec 是宿主实际算出来的哈希与解析出的路径：未信任状态靠这两个值变成可信。
+	sha  string
+	exec string
+
 	sub pluginfeed.Subscription
 }
 
@@ -41,17 +49,26 @@ type configRow struct {
 }
 
 // sourceRows 汇总来源列表：插件来源在前，订阅在后。
+//
+// 「插件来源」不只取清单：宿主还扫描插件目录，能报出清单里没写的手工插件。只列清单的话
+// 这类插件在界面上完全消失，而它恰好是最需要操作的一种状态 —— 未信任所以没启动，
+// 用户却找不到任何入口。
 func (m Model) sourceRows() []sourceRow {
 	rows := make([]sourceRow, 0, len(m.afs.Sources)+4)
 
 	live := map[string]pluginhost.SourceStatus{}
+	var discovered []pluginhost.SourceStatus
 	if m.host != nil {
 		for _, st := range m.host.Sources() {
 			live[st.ID] = st
+			discovered = append(discovered, st)
 		}
 	}
+
+	declared := map[string]bool{}
 	for _, spec := range m.afs.Sources {
-		row := sourceRow{spec: spec, name: spec.Name}
+		declared[spec.ID] = true
+		row := sourceRow{spec: spec, name: spec.Name, declared: true}
 		switch {
 		case !spec.EnabledValue():
 			row.state, row.detail = pluginhost.StateDisabled, "已在清单中停用"
@@ -59,6 +76,7 @@ func (m Model) sourceRows() []sourceRow {
 			if st, ok := live[spec.ID]; ok {
 				row.state, row.detail = st.State, st.Detail
 				row.version, row.apps = st.Version, st.Apps
+				row.sha, row.exec = st.SHA256, st.Exec
 				// 清单里的名字优先，否则用插件自报的名字。
 				row.name = firstNonEmptyStr(spec.Name, st.Name)
 			} else {
@@ -66,6 +84,24 @@ func (m Model) sourceRows() []sourceRow {
 			}
 		}
 		rows = append(rows, row)
+	}
+
+	// 宿主发现到、但清单里没声明的来源。宿主的顺序是按 id 排好的，直接沿用。
+	for _, st := range discovered {
+		if declared[st.ID] {
+			continue
+		}
+		rows = append(rows, sourceRow{
+			spec:     apps.SourceSpec{ID: st.ID, Kind: apps.KindPlugin},
+			name:     firstNonEmptyStr(st.Name, st.ID),
+			state:    st.State,
+			detail:   st.Detail,
+			version:  st.Version,
+			apps:     st.Apps,
+			sha:      st.SHA256,
+			exec:     st.Exec,
+			declared: false,
+		})
 	}
 
 	if m.feed != nil {
@@ -155,7 +191,13 @@ func (m Model) viewSources(w, height int) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(m.theme.Dim().Render("enter/c 进入（订阅看可装/可更新，插件改配置）   o 官方源   a 添加订阅   d 删除   space 启用/停用   r 重载"))
+	// 提示行要压到面板内宽以内：比面板宽时会被 Frame 折行，把最后几行来源挤出可视区。
+	avail := w - 4
+	if avail < 8 {
+		avail = 8
+	}
+	hint := "enter/c 进入   t 信任   o 官方源   a 加订阅   d 删除   space 启停   r 重载"
+	b.WriteString(m.theme.Dim().Render(Truncate(hint, avail)))
 	return m.theme.Frame("来源", strings.TrimRight(b.String(), "\n"), w, height, true)
 }
 
@@ -199,7 +241,7 @@ func (m Model) stateText(r sourceRow) string {
 	case pluginhost.StateOK:
 		return m.theme.OK().Render(fmt.Sprintf("正常 · %d 个软件", r.apps))
 	case pluginhost.StateUntrusted:
-		return m.theme.Warn().Render("未信任 · 需在清单里写入 sha256")
+		return m.theme.Warn().Render("未信任 · 按 t 信任")
 	case pluginhost.StateMissing:
 		return m.theme.Warn().Render("缺少文件")
 	case pluginhost.StateError:
@@ -296,6 +338,8 @@ func (m Model) updateSources(key string) (tea.Model, tea.Cmd) {
 		return m.removeSubscription(rows)
 	case "space":
 		return m.toggleSource(rows)
+	case "t":
+		return m.trustSource(rows)
 	case "r":
 		return m.reloadSources()
 	}
@@ -560,6 +604,11 @@ func (m Model) toggleSource(rows []sourceRow) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if !row.declared {
+		m.setStatus(row.spec.ID + " 还没写进清单；按 t 信任后会自动补一条，之后再改启停")
+		return m, nil
+	}
+
 	// 插件来源：改清单里的 enabled 并落盘。
 	for i := range m.afs.Sources {
 		if m.afs.Sources[i].ID != row.spec.ID {
@@ -571,10 +620,85 @@ func (m Model) toggleSource(rows []sourceRow) (tea.Model, tea.Cmd) {
 			m.setStatusErr(fmt.Errorf("保存清单: %w", err))
 			return m, nil
 		}
-		m.status = "已切换来源状态（重载后生效，按 r）"
+		// 立刻生效：宿主持有的是构造时的 entry 副本，不重建就只是改了文件而没改行为。
+		if m.host != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			if err := m.host.Reconfigure(ctx, m.afs.Sources); err != nil {
+				m.setStatusErr(err)
+				return m, nil
+			}
+		}
+		if next {
+			m.status = "已启用该来源"
+		} else {
+			m.status = "已停用该来源"
+		}
 		return m, nil
 	}
 	return m, nil
+}
+
+// trustSource 让用户确认并记录某个插件来源的信任哈希。
+//
+// 此前这一步只能手写进 apps.yaml：状态文字明说「需在清单里写入 sha256」，界面上却
+// 没有对应操作，等于把用户推去改 YAML 文件。这里把确认搬到界面上，并把实际路径与
+// 哈希都摆出来 —— 信任比的是「这个文件是不是我要的那个」，只给一个 id 无法判断。
+func (m Model) trustSource(rows []sourceRow) (tea.Model, tea.Cmd) {
+	if m.srcCursor < 0 || m.srcCursor >= len(rows) {
+		return m, nil
+	}
+	row := rows[m.srcCursor]
+	if row.isSubscription {
+		m.setStatus("订阅在添加时已按域名授权，没有单独的信任步骤")
+		return m, nil
+	}
+
+	id := row.spec.ID
+	name := firstNonEmptyStr(row.name, id)
+	if row.state == pluginhost.StateOK {
+		m.setStatus(name + " 已经是可信的")
+		return m, nil
+	}
+	if row.sha == "" {
+		m.setStatusErr(fmt.Errorf("宿主还没算出 %s 的哈希，先按 r 重载一次", id))
+		return m, nil
+	}
+
+	sha, exec := row.sha, orDash(row.exec)
+	m.confirm = &confirmBox{
+		Title: "信任插件来源",
+		Message: fmt.Sprintf("信任之后 %s 会在本机运行 —— 插件等于任意代码执行。\n\n"+
+			"来源：%s\n可执行文件：%s\nsha256：%s\n\n"+
+			"请先把这个哈希与插件发布方给出的值核对一致，再确认。",
+			name, id, exec, sha),
+		OnYes: func(mm *Model) tea.Cmd { return mm.applySourceTrust(id, sha, name) },
+	}
+	return m, nil
+}
+
+// applySourceTrust 把信任哈希写进清单并立刻重载，省掉用户再按一次 r。
+func (m *Model) applySourceTrust(id, sha, name string) tea.Cmd {
+	if m.afs == nil {
+		m.setStatusErr(fmt.Errorf("清单未加载，无法记录信任"))
+		return nil
+	}
+	m.afs.SetSourceTrust(id, sha)
+	if err := m.afs.Save(); err != nil {
+		// 内存里已经改了，但没落盘：下次启动会退回未信任，所以这里必须报错。
+		m.setStatusErr(fmt.Errorf("保存清单: %w", err))
+		return nil
+	}
+	if m.host != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := m.host.Reconfigure(ctx, m.afs.Sources); err != nil {
+			m.setStatusErr(fmt.Errorf("重载插件来源: %w", err))
+			return nil
+		}
+	}
+	m.status = "已信任 " + name + "，正在加载"
+	return nil
 }
 
 func (m Model) reloadSources() (tea.Model, tea.Cmd) {
@@ -584,8 +708,31 @@ func (m Model) reloadSources() (tea.Model, tea.Cmd) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	m.host.Load(ctx)
-	m.status = "插件来源已重载"
+
+	// 先把磁盘上的来源读回来：文档让用户手改 apps.yaml 写 trust，若只重建内存里的
+	// 那份快照，手改的内容永远进不来，按 r 就等于没按。
+	//
+	// 只采纳 Sources：清单里的 Apps 归「概览」页管，整份替掉会让那边已加载的列表
+	// 与界面上的内容对不上。文件不存在时保持内存里的内容（Load1 遇到不存在的文件会
+	// 返回空清单，直接采纳会把刚加进来的来源抹掉）。
+	if m.afs != nil && m.afs.Path != "" {
+		if _, err := os.Stat(m.afs.Path); err == nil {
+			fresh, err := apps.Load(m.afs.Path)
+			if err != nil {
+				m.setStatusErr(fmt.Errorf("重读清单: %w", err))
+				return m, nil
+			}
+			m.afs.Sources = fresh.Sources
+		}
+	}
+
+	if err := m.host.Reconfigure(ctx, m.afs.Sources); err != nil {
+		m.setStatusErr(err)
+		return m, nil
+	}
+	// 来源集合可能变了，光标停在原来的位置没有意义。
+	m.srcCursor = 0
+	m.status = "已按清单重载插件来源"
 	return m, nil
 }
 
