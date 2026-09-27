@@ -150,6 +150,10 @@ func (m Model) counts() string {
 	if len(m.apps) == 0 {
 		return ""
 	}
+	if m.loading && m.checkTotal > 0 {
+		// 右上角也报进度：列表已经出来了，用户最容易盯着这一带看。
+		return fmt.Sprintf("检查中 %d/%d", m.checkTotal-len(m.checkLeft), m.checkTotal)
+	}
 	var upd, inst, pend int
 	for _, a := range m.apps {
 		if a.Status.Installed {
@@ -196,10 +200,14 @@ const (
 )
 
 func (m Model) viewOverview(w, height int) string {
-	if m.busy && len(m.apps) == 0 {
-		return m.theme.Frame("概览", m.spinnerText()+" 正在检查上游版本…", w, height, true)
-	}
 	if len(m.apps) == 0 {
+		// 还在等控制层回话：这里必须说清「在忙」，而不是谎报「还没有任何软件」——
+		// 启动时要先把订阅里的插件拉起来才知道有哪些软件，这段可能好几秒。
+		if m.loading {
+			return m.theme.Frame("概览",
+				m.loadText()+"\n\n软件列表来自订阅。首次启动要先取回插件与列表，\n"+
+					"之后启动就快了（本地缓存）。", w, height, true)
+		}
 		return m.theme.Frame("概览",
 			"还没有任何软件。\n\n到「来源」面板（点上面的标签或按 6），\n在底部操作栏里选「官方源」，软件会随源一起出现。",
 			w, height, true)
@@ -232,13 +240,22 @@ func (m Model) overviewRow(i int, a *engine.App, nameMax, noteMax int) []string 
 		name += "（停用）"
 	}
 	note := a.Note
-	if a.CheckErr != nil {
+	switch {
+	case a.CheckErr != nil:
 		note = "检查失败：" + a.CheckErr.Error()
+	case a.Conflict != nil && a.Conflict.Message != "":
+		// 冲突原因必须看得见：只写「冲突」而不说跟谁冲突，用户没法处置。
+		note = a.Conflict.Message
+	}
+	state := actionLabel(a)
+	if m.isChecking(a.Ref.ID) {
+		// 这一轮还没问完：状态列直接显示在查，而不是先报一个马上会被推翻的结论。
+		state = m.spinnerText() + " 检查中"
 	}
 	return []string{
 		m.theme.Cursor(i == m.cursor),
 		nameCell(name, nameMax),
-		actionLabel(a),
+		state,
 		orDash(a.Status.Version),
 		orDash(a.Release.Version),
 		noteCell(note, noteMax),
@@ -333,13 +350,17 @@ func (m Model) viewDetail(w, height int) string {
 	section("版本")
 	line("本地", orDash(a.Status.Version)+"（来源 "+orDash(a.Status.Source)+"）")
 	line("上游", orDash(a.Release.Version)+"  发布 "+fmtTime(a.Release.PublishedAt))
-	line("本次动作", string(a.Action))
-	line("说明", orDash(a.Note))
+	line("本次动作", actionLabel(a))
+	note := a.Note
+	if a.Conflict != nil && a.Conflict.Message != "" {
+		note = a.Conflict.Message
+	}
+	line("说明", orDash(note))
 	if a.CheckErr != nil {
 		line("检查错误", m.theme.Err().Render(a.CheckErr.Error()))
 	}
 	if a.Shadowed {
-		line("冲突", m.theme.Warn().Render(a.Note))
+		line("冲突", m.theme.Warn().Render(note))
 	}
 	if len(a.Release.Artifacts) > 0 {
 		art := a.Release.Artifacts[0]
@@ -422,14 +443,25 @@ func (m Model) jobRow(i int, j *jobItem, nameMax, noteMax int) []string {
 	if j.Err != nil {
 		note = j.Err.Error()
 	}
+	// 还在跑的任务带转圈：任务面板是用户盯进度的地方，一个不动的「进行中」
+	// 分不出「在跑」还是「卡死了」。
+	state := j.State
+	if j.State == "进行中" || j.State == "等待" || j.State == "排队" {
+		state = m.spinnerText() + " " + j.State
+	}
+	speed := util.HumanSpeed(j.Speed)
+	if j.Speed <= 0 {
+		// 「-- /s」看着像测不出来，其实就是没有速度可言（没开始下载或已结束）。
+		speed = "—"
+	}
 	return []string{
 		m.theme.Cursor(i == m.jobCursor),
 		nameCell(j.Name, nameMax),
-		j.State,
+		state,
 		j.Phase,
 		bar,
 		pct,
-		util.HumanSpeed(j.Speed),
+		speed,
 		noteCell(note, noteMax),
 	}
 }
@@ -616,9 +648,13 @@ func (m Model) viewHelp() string {
 
 func (m Model) viewFooter(width int) string {
 	left := m.status
-	if m.fatal != nil {
+	switch {
+	case m.fatal != nil:
 		left = m.theme.Err().Render("错误：" + m.fatal.Error())
-	} else if m.busy {
+	case m.loading:
+		// 在等控制层时，底栏的正文换成加载文案：转圈配一句无关的提示等于没有提示。
+		left = m.loadText()
+	case m.busy:
 		left = m.spinnerText() + " " + left
 	}
 	// 状态文字可能是任意长的错误信息（引擎、网络、插件都能抛出长句），

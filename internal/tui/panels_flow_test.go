@@ -34,6 +34,10 @@ func ready(t *testing.T, apps ...*engine.App) Model {
 	m := newTestModel(t)
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.apps = apps
+	// 这个助手代表「列表已经拿到手了」：加载态是 New 到首条 appsMsg 之间的状态，
+	// 留着它会让底栏一直显示加载文案（见 loading_test.go）。
+	m.loading = false
+	m.checkLeft, m.checkTotal = nil, 0
 	return m
 }
 

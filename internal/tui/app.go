@@ -187,6 +187,17 @@ type Model struct {
 	statusT time.Time
 	fatal   error
 
+	// loading / loadLabel / checkLeft / checkTotal 描述「正在等控制层回话」。
+	//
+	// 与 busy 分开是有意的：busy 是「正在动磁盘」（退出要拦、危险键要拦），
+	// loading 只是「稍等」—— 按 q 照样退出、方向键照样翻。
+	//
+	// 以前检查上游时两者都不设：界面停在「还没有任何软件」，看起来像卡死了。
+	loading    bool
+	loadLabel  string
+	checkLeft  map[string]bool
+	checkTotal int
+
 	confirm    *confirmBox
 	prompt     *promptBox
 	help       bool
@@ -208,6 +219,10 @@ func New(opts Options) Model {
 		spin:      newSpinner(opts.ASCII),
 		keys:      newKeyMap(),
 		helpView:  newHelpModel(opts.NoColor),
+		// 第一帧就要说明白「在忙什么」：Init 里的命令还没回话时，界面
+		// 已经要先给出一行字，而不是让用户对着空屏猜。
+		loading:   true,
+		loadLabel: "正在加载软件列表",
 	}
 	if c := opts.Ctrl; c != nil {
 		for _, r := range c.LogSnapshot() {
@@ -222,6 +237,8 @@ func New(opts Options) Model {
 type appsMsg struct {
 	apps []*engine.App
 	err  error
+	// local 表示这一批只做了本地展开（不联网），收到后要接着查上游。
+	local bool
 }
 
 type appliedMsg struct {
@@ -275,10 +292,63 @@ func newHelpModel(noColor bool) help.Model {
 
 // ── 生命周期 ──────────────────────────────────────────────────
 
-// Init 启动时先做一次全量检查。
+// checkPhase 是引擎发检查进度事件时带的阶段名。
+const checkPhase = "检查"
+
+// Init 启动时先取本地列表，再查上游。
+//
+// 分两步是为了让界面立刻有内容：取本地列表不联网（毫秒级），查上游要挨个问
+// GitHub（可能十几秒）。合成一步的话，启动后只能对着空屏等 —— 而那正是用户
+// 抱怨「没有加载中、像是坏了」的那一段。
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.waitEvent(), m.checkCmd(nil), m.spin.Tick)
+	return tea.Batch(m.waitEvent(), m.loadCmd(), m.spin.Tick)
 }
+
+// loadCmd 展开本地软件列表（不联网）。
+func (m Model) loadCmd() tea.Cmd {
+	ctrl := m.ctrl
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		list, err := ctrl.Refresh(ctx)
+		return appsMsg{apps: list, err: err, local: true}
+	}
+}
+
+// startCheck 统一「开始一轮检查」的界面状态，并返回对应命令。
+//
+// 检查有几处入口（启动、c/C、改完设置或清单后的自动刷新），各写一遍的话迟早
+// 漏一处 —— 漏掉的那处就是「点了没反应」。ids 为 nil 表示全查。
+func (m *Model) startCheck(label string, ids []string) tea.Cmd {
+	if ids == nil {
+		ids = make([]string, 0, len(m.apps))
+		for _, a := range m.apps {
+			ids = append(ids, a.Ref.ID)
+		}
+	}
+	m.loading = true
+	m.loadLabel = label
+	m.checkTotal = len(ids)
+	m.checkLeft = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		m.checkLeft[id] = true
+	}
+	return m.checkCmd(ids)
+}
+
+// loadText 是「正在等控制层」时显示的一行字（带转圈与进度）。
+func (m Model) loadText() string {
+	if m.checkTotal > 1 {
+		done := m.checkTotal - len(m.checkLeft)
+		return fmt.Sprintf("%s %s %d/%d…", m.spinnerText(), m.loadLabel, done, m.checkTotal)
+	}
+	return m.spinnerText() + " " + m.loadLabel + "…"
+}
+
+// isChecking 报告某个软件这一轮还没回话。
+//
+// 有它才能在列表里逐行点亮：用户看到的是「还剩几个没问完」，而不是不动的一屏。
+func (m Model) isChecking(id string) bool { return m.checkLeft[id] }
 
 // Update 处理消息。
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -354,11 +424,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case appsMsg:
 		m.busy = false
 		if msg.err != nil {
+			m.loading = false
+			m.checkLeft, m.checkTotal = nil, 0
 			m.setStatusErr(msg.err)
 			return m, nil
 		}
 		m.apps = msg.apps
 		m.clampCursor()
+		if msg.local {
+			// 本地列表先到：立刻接着查上游。列表已经在屏幕上，剩下的只是逐行
+			// 点亮，用户不会觉得卡住。
+			return m, m.startCheck("正在检查上游版本", nil)
+		}
+		m.loading = false
+		m.checkLeft, m.checkTotal = nil, 0
 		pending := 0
 		for _, a := range m.apps {
 			if a.Action == core.ActionInstall || a.Action == core.ActionUpdate {
@@ -384,7 +463,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.setStatusErr(fmt.Errorf("完成 %d 个，失败 %d 个（见任务/日志面板）", ok, failed))
 		}
-		return m, m.checkCmd(nil)
+		return m, m.startCheck("正在检查上游版本", nil)
 
 	case planMsg:
 		m.busy = false
@@ -404,7 +483,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.setStatus(msg.text)
-		return m, m.checkCmd(nil)
+		return m, m.startCheck("正在检查上游版本", nil)
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -426,29 +505,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleEvent(e core.Event) {
 	if e.AppID != "" {
-		j := m.jobFor(e.AppID)
-		switch e.Kind {
-		case core.EventStarted:
-			j.State = "进行中"
-			j.Phase = e.Phase
-			j.Start = time.Now()
-			m.tab = tabJobs
-		case core.EventPhase:
-			j.State = "进行中"
-			j.Phase = e.Phase
-		case core.EventProgress:
-			j.Done, j.Total, j.Speed = e.Done, e.Total, e.Speed
-		case core.EventBlocked:
-			j.State = "等待"
-			j.Phase = "进程占用"
-		case core.EventFinished:
-			j.State = "完成"
-			j.Phase = ""
-			j.Elapsed = time.Since(j.Start)
-		case core.EventFailed:
-			j.State = "失败"
-			j.Err = e.Err
-			m.setStatusErr(e.Err)
+		// 检查进度单独对待，不建任务行：检查不是任务，它没有「完成」事件，
+		// 建出来的行会永远停在「进行中」，把任务面板变成垃圾堆。
+		// 用户要看的是「还剩几个没问完」，那就是 checkLeft 的作用。
+		if e.Phase == checkPhase {
+			delete(m.checkLeft, e.AppID)
+		} else {
+			j := m.jobFor(e.AppID)
+			switch e.Kind {
+			case core.EventStarted:
+				j.State = "进行中"
+				j.Phase = e.Phase
+				j.Start = time.Now()
+				m.tab = tabJobs
+			case core.EventPhase:
+				j.State = "进行中"
+				j.Phase = e.Phase
+			case core.EventProgress:
+				j.Done, j.Total, j.Speed = e.Done, e.Total, e.Speed
+			case core.EventBlocked:
+				j.State = "等待"
+				j.Phase = "进程占用"
+			case core.EventFinished:
+				j.State = "完成"
+				j.Phase = ""
+				j.Elapsed = time.Since(j.Start)
+			case core.EventFailed:
+				j.State = "失败"
+				j.Err = e.Err
+				m.setStatusErr(e.Err)
+			}
 		}
 	}
 	if e.Msg != "" {
@@ -736,12 +822,12 @@ func (m Model) updateOverview(key string) (tea.Model, tea.Cmd) {
 		if a := m.current(); a != nil {
 			m.busy = true
 			m.setStatus("正在检查 " + a.Ref.DisplayName())
-			return m, m.checkCmd([]string{a.Ref.ID})
+			return m, m.startCheck("正在检查 "+a.Ref.DisplayName(), []string{a.Ref.ID})
 		}
 	case "C":
 		m.busy = true
 		m.setStatus("正在检查全部软件…")
-		return m, m.checkCmd(nil)
+		return m, m.startCheck("正在检查上游版本", nil)
 	case "u":
 		if a := m.current(); a != nil {
 			return m.applyOne(a)
@@ -774,7 +860,7 @@ func (m Model) updateOverview(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.setStatus("已更新启用状态")
-		return m, m.checkCmd(nil)
+		return m, m.startCheck("正在检查上游版本", nil)
 	case "x":
 		if a := m.current(); a != nil {
 			id, name := a.Ref.ID, a.Ref.DisplayName()
